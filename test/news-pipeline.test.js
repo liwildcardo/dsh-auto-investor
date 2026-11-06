@@ -143,6 +143,24 @@ test('backfillPublishDates removes an item once its real date proves it stale', 
   assert.equal(rows.length, 0);
 });
 
+test('status news lists dated items before undated estimates', async (t) => {
+  const { openDb } = await import('../lib/db.js');
+  const { resolveConfig } = await import('../lib/config.js');
+  const { createService } = await import('../lib/service.js');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-ord-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const fetchFn = async () => ({ ok: true, json: async () => ({}) });
+  const svc = createService({ db, cfg: resolveConfig({}), fetchFn, llm: async () => '{}', now: () => Date.now() });
+  db.upsertNews({ url: 'https://a', title: '金价快速反弹', source: 's', ts: Date.now(), tsEstimated: true });
+  db.upsertNews({ url: 'https://b', title: '央行增持黄金0.93吨', source: 's', ts: Date.now() - 3600_000, tsEstimated: false });
+  const news = svc.status().news;
+  assert.equal(news[0].url, 'https://b', 'dated item first');
+  assert.equal(news[1].url, 'https://a', 'estimate last');
+});
+
 test('rankNews always places dated items before estimated ones', () => {
   const now = Date.UTC(2026, 10, 6, 12, 0);
   const ranked = rankNews([
