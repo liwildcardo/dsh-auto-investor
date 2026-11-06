@@ -28,7 +28,8 @@ window.__ModuleLoader__.load({
       const p = (x) => String(x).padStart(2, '0');
       const date = `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
       if (n.tsEstimated) return `约 ${date}`;
-      if (n.ts % 86400_000 === 0) return date;
+      // Date-only sources parse to UTC or Shanghai midnight → omit the clock.
+      if (n.ts % 86400_000 === 0 || (n.ts + 8 * 3600_000) % 86400_000 === 0) return date;
       return `${date} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
     };
 

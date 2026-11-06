@@ -96,10 +96,10 @@ test('ingestFeeds resolves dates for undated index items via the article page', 
   const res = await ingestFeeds(fetchFn, db, { newsMaxAgeDays: 60 }, [feed]);
   assert.equal(res.kept, 1);
   assert.equal(db.last.tsEstimated, false, 'detail-page date resolved');
-  assert.equal(new Date(db.last.ts).toISOString().slice(0, 10), '2026-10-30');
+  assert.equal(new Date(db.last.ts + 8 * 3600_000).toISOString().slice(0, 10), '2026-10-30');
 });
 
-test('backfillPublishDates upgrades already-stored estimates over time', async () => {
+test('backfillPublishDates upgrades stored estimates over time', async () => {
   const rows = [
     { hash: 'h1', ts: 1000, tsEstimated: true, source: '中国黄金协会', title: '贵金属周报674期', url: 'https://www.cngold.org.cn/news/show-9609.html', summary: '' },
   ];
@@ -109,12 +109,47 @@ test('backfillPublishDates upgrades already-stored estimates over time', async (
       if (i.url === rows[0].url) { rows[0].ts = i.ts; rows[0].tsEstimated = i.tsEstimated; return false; }
       return true;
     },
+    removeNews() { return 0; },
   };
   const fetchFn = async () => ({ ok: true, text: async () => '<div class="time">2026-09-29</div>' });
-  const upgraded = await backfillPublishDates(fetchFn, db, 5);
-  assert.equal(upgraded, 1);
+  const res = await backfillPublishDates(fetchFn, db, 5, { newsMaxAgeDays: 60 });
+  assert.equal(res.upgraded, 1);
   assert.equal(rows[0].tsEstimated, false, 'estimate cleared');
-  assert.equal(new Date(rows[0].ts).toISOString().slice(0, 10), '2026-09-29');
+  assert.equal(new Date(rows[0].ts + 8 * 3600_000).toISOString().slice(0, 10), '2026-09-29');
+});
+
+test('resolvePublishTime parses year-less MM-DD times and infers the year', async () => {
+  // Real gelonghui markup: <time class="date">04-02 15:10 (no year)
+  const page = async () => ({ ok: true, text: async () => '<div><time class="date" data-v-x>04-02 15:10</time></div>' });
+  const ts = await resolvePublishTime(page, 'https://dxpress.example.com/p/4285505');
+  assert.ok(Number.isFinite(ts), 'date resolved');
+  const d = new Date(ts + 8 * 3600_000);
+  assert.equal(`${d.getUTCMonth() + 1}-${d.getUTCDate()}`, '4-2');
+  assert.ok(ts <= Date.now(), 'inferred year puts it in the past');
+});
+
+test('backfillPublishDates removes an item once its real date proves it stale', async () => {
+  const rows = [
+    { hash: 'h2', ts: Date.now(), tsEstimated: true, source: 'web-search', title: '百利好丨金价冲高回落后，二季度何去何从？', url: 'https://dxpress.example.com/p/4285505', summary: '' },
+  ];
+  const db = {
+    latestNews: () => rows,
+    upsertNews() { throw new Error('must not upgrade a stale row'); },
+    removeNews(hash) { rows.splice(rows.findIndex(r => r.hash === hash), 1); return 1; },
+  };
+  const fetchFn = async () => ({ ok: true, text: async () => '<time class="date">04-02 15:10</time>' });
+  const res = await backfillPublishDates(fetchFn, db, 5, { newsMaxAgeDays: 60 });
+  assert.equal(res.dropped, 1, 'stale item removed');
+  assert.equal(rows.length, 0);
+});
+
+test('rankNews always places dated items before estimated ones', () => {
+  const now = Date.UTC(2026, 10, 6, 12, 0);
+  const ranked = rankNews([
+    { title: '金价突破4100美元 二季度展望', ts: now, tsEstimated: true }, // high score, no date
+    { title: '贵金属周报674期', ts: now - 86400_000, tsEstimated: false },  // real date
+  ], now);
+  assert.equal(ranked[0].tsEstimated, false, 'dated item first');
 });
 
 /* ---------- I6: feed failure accounting (dead ≠ empty) ---------- */
