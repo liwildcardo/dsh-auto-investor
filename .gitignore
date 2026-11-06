@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Runtime data / databases (never commit simulation state)
+*.db
+*.db.json
+*.db-*
+auto-investor-data/
+data/
+
+# Temp probes / debug scripts
+_probe_*.mjs
+_dbg_*.mjs
+*.log
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

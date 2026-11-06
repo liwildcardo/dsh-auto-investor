@@ -1,0 +1,40 @@
+{
+  "name": "dsh-auto-investor",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "自动投资机 — DeepSeek Harness 插件：黄金模拟投资引擎，LLM 决策 + 策略复盘学习循环 + Web 仪表盘",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "gold",
+    "simulation",
+    "llm-agent",
+    "strategy-learning"
+  ],
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}
