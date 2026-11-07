@@ -34,9 +34,9 @@ export function apply(ctx, config) {
     }
     return undefined;
   };
-  // Resolved provider/model of the last call — surfaced in status so the
-  // dashboard can show which model the engine actually used.
-  let lastLlm = null;
+  // Resolved provider/model of the last call — persisted so the dashboard can
+  // show the engine's model even before the first call after a restart.
+  let lastLlm = db.getState('llm:last') ?? null;
   async function llmCall(prompt) {
     // Model resolution: explicit config -> user's current default model
     // (agentDefaultModel) -> first provider with an advertised model.
@@ -59,6 +59,7 @@ export function apply(ctx, config) {
     }
     if (!model) throw new Error(`no LLM model resolved (provider ${provider}; set config llmProvider/llmModel)`);
     lastLlm = { provider, model, at: Date.now() }; // shown in status for transparency
+    try { db.putState('llm:last', lastLlm); } catch { /* best effort */ }
     return collectStream(ctx.llm.stream({
       provider,
       model,
