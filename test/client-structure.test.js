@@ -211,6 +211,13 @@ test('operations expose analysis controls only — no manual trade buttons', asy
   }
 });
 
+test('operations note shows which model the engine resolved', async () => {
+  const api = await loadClient({ ...fakeState, llm: { provider: 'deepseek-account', model: 'deepseek-flash' } });
+  const reg = applyAndCapture(api);
+  const text = JSON.stringify(reg['auto-investor-dashboard'].Component());
+  assert.ok(text.includes('当前模型：deepseek-account/deepseek-flash'), 'model shown');
+});
+
 test('strategy versions show only the latest three, newest first', async () => {
   const versions = [1, 2, 3, 4, 5].map(id => ({
     id,

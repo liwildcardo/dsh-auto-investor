@@ -309,7 +309,10 @@ window.__ModuleLoader__.load({
                 onClick: () => act({ kind: state.paused ? 'resume' : 'pause' }),
               }, state.paused ? '恢复自动循环' : '暂停自动循环'),
               h('div', { className: 'ai-note' },
-                '下单由策略引擎自动执行，用户无需也不能手动买卖；成交仍受交易时段、单笔5000元、总额100000元及频率计划约束。'))),
+                '下单由策略引擎自动执行，用户无需也不能手动买卖；成交仍受交易时段、单笔5000元、总额100000元及频率计划约束。',
+                state.llm
+                  ? ` 当前模型：${state.llm.provider}/${state.llm.model}（跟随 Harness 默认模型）。`
+                  : ''))),
 
           /* ── 策略版本（完整交易策略） ── */
           h('div', { className: 'ai-card ai-acc-amber' },

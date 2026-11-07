@@ -153,12 +153,16 @@ test('status news lists dated items before undated estimates', async (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-ord-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
   const fetchFn = async () => ({ ok: true, json: async () => ({}) });
-  const svc = createService({ db, cfg: resolveConfig({}), fetchFn, llm: async () => '{}', now: () => Date.now() });
+  const svc = createService({
+    db, cfg: resolveConfig({}), fetchFn, llm: async () => '{}', now: () => Date.now(),
+    llmInfo: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', at: 1 }),
+  });
   db.upsertNews({ url: 'https://a', title: '金价快速反弹', source: 's', ts: Date.now(), tsEstimated: true });
   db.upsertNews({ url: 'https://b', title: '央行增持黄金0.93吨', source: 's', ts: Date.now() - 3600_000, tsEstimated: false });
   const news = svc.status().news;
   assert.equal(news[0].url, 'https://b', 'dated item first');
   assert.equal(news[1].url, 'https://a', 'estimate last');
+  assert.equal(svc.status().llm?.model, 'deepseek-flash', 'status exposes the resolved model');
 });
 
 test('rankNews always places dated items before estimated ones', () => {

@@ -29,9 +29,13 @@ export function apply(ctx, config) {
     }
     return undefined;
   };
+  // Resolved provider/model of the last call — surfaced in status so the
+  // dashboard can show which model the engine actually used.
+  let lastLlm = null;
   async function llmCall(prompt) {
     // Model resolution: explicit config -> user's current default model
     // (agentDefaultModel) -> first provider with an advertised model.
+    // NOTE: this is the harness DEFAULT model, not the per-conversation picker.
     let provider = config?.llmProvider ?? undefined;
     let model = config?.llmModel ?? undefined;
     if (!provider || !model) {
@@ -49,6 +53,7 @@ export function apply(ctx, config) {
       model = pickId(models[0], 'id', 'name', 'model', 'modelId');
     }
     if (!model) throw new Error(`no LLM model resolved (provider ${provider}; set config llmProvider/llmModel)`);
+    lastLlm = { provider, model, at: Date.now() }; // shown in status for transparency
     return collectStream(ctx.llm.stream({
       provider,
       model,
@@ -74,7 +79,7 @@ export function apply(ctx, config) {
     }
     : undefined;
 
-  const service = createService({ db, cfg, fetchFn, llm: llmCall, now: () => Date.now(), searchFn });
+  const service = createService({ db, cfg, fetchFn, llm: llmCall, now: () => Date.now(), searchFn, llmInfo: () => lastLlm });
   const state = { lastRun: null };
 
   ctx.effect(() => registerTools(ctx, service), 'auto-investor: tools');
