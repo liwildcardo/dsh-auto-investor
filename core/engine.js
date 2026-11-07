@@ -122,10 +122,14 @@ export function createProductEngine({
   }
 
   function seriesFor(symbol, limit = DEFAULT_SERIES) {
+    const cutoff = now() - 400 * 86_400_000; // ignore stale/misparsed history rows
     if (product.market.kind === 'single') {
       return db.latestTicksByProduct(product.id, limit).map(t => t.price).filter(Number.isFinite);
     }
-    return db.listPoints(product.id, symbol, limit).map(p => p.price).filter(Number.isFinite);
+    return db.listPoints(product.id, symbol, limit)
+      .filter(p => !Number.isFinite(p.ts) || p.ts >= cutoff)
+      .map(p => p.price)
+      .filter(Number.isFinite);
   }
 
   function volumesFor(symbol, limit = DEFAULT_SERIES) {
