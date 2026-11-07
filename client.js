@@ -649,7 +649,7 @@ window.__ModuleLoader__.load({
         let alive = true;
         const load = async () => {
           try {
-            const s = await fetchState();
+            const s = await fetchProductState('gold'); // strip summarises the gold page
             if (alive) setState(s);
           } catch { /* strip is decorative */ }
         };
@@ -657,16 +657,16 @@ window.__ModuleLoader__.load({
         const t = setInterval(load, 15_000);
         return () => { alive = false; clearInterval(t); };
       }, []);
-      if (!state?.quote) return null;
+      const snap = state?.snapshot;
+      if (!state || !snap) return null;
       return h('div', { className: 'ai-strip' },
         h('style', null, CSS),
-        h('span', null, '🪙 自动投资机'),
-        h('span', null, '买入 ', h('b', null, fmt(state.quote.buy))),
-        h('span', null, '卖出 ', h('b', null, fmt(state.quote.sell))),
+        h('span', null, `🪙 自动投资机·${state.product?.name ?? ''}`),
+        h('span', null, '现金 ', h('b', null, fmt(snap.cash))),
         h('span', null, '今日 ',
-          h('b', { className: pnlClass(state.portfolio.todayPnl) }, fmt(state.portfolio.todayPnl))),
+          h('b', { className: pnlClass(snap.todayPnl) }, fmt(snap.todayPnl))),
         h('span', null, '持仓 ',
-          h('b', { className: pnlClass(state.portfolio.holdingPnl) }, fmt(state.portfolio.holdingPnl))));
+          h('b', { className: pnlClass(snap.holdingPnl) }, fmt(snap.holdingPnl))));
     }
 
     return {
