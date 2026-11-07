@@ -58,7 +58,6 @@ export default {
       { id: 'trend', params: { fast: 5, slow: 20 }, weight: 1.2 },
       { id: 'momentum', params: { period: 10, threshold: 0.035 }, weight: 1 },
       { id: 'rsi', params: { period: 14 }, weight: 0.6 },
-      { id: 'volume', params: { period: 20, hot: 1.5 }, weight: 0.7 },
     ],
     prompt: {
       role: '你是港股投资策略引擎，负责模拟组合的选股与仓位决策。',
@@ -73,7 +72,6 @@ export default {
     evolvable: [
       { path: 'signals.trend.params.slow', min: 10, max: 120, step: 5 },
       { path: 'signals.momentum.params.threshold', min: 0.01, max: 0.1, step: 0.005 },
-      { path: 'signals.volume.params.hot', min: 1.2, max: 3, step: 0.1 },
       { path: 'risk.stopLossPct', min: -15, max: -2, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 3, max: 40, step: 1 },
     ],

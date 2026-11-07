@@ -55,7 +55,6 @@ export default {
       { id: 'trend', params: { fast: 10, slow: 50 }, weight: 1.2 },
       { id: 'momentum', params: { period: 20, threshold: 0.04 }, weight: 1 },
       { id: 'rsi', params: { period: 14 }, weight: 0.6 },
-      { id: 'valuation', params: { low: 0.3, high: 0.8 }, weight: 0.5 },
     ],
     prompt: {
       role: '你是美股投资策略引擎，负责模拟组合的选股与仓位决策。',

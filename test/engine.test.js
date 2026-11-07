@@ -130,17 +130,25 @@ test('closed session rejects the fill', async (t) => {
 test('reflection applies only whitelisted, clamped parameters and forks a version', async (t) => {
   const llmOut = JSON.stringify({
     critique: '趋势参数偏慢，需缩短',
-    params: { 'signals.trend.params.slow': 200, 'risk.perTrade': 999999 },
+    params: { 'signals.trend.params.slow': 25, 'risk.perTrade': 999999 },
   });
   const { engine } = makeEngine(t, { llm: async () => llmOut });
   const r = await engine.reflectIfDue({ force: true });
   assert.equal(r.reflected, true);
   assert.equal(r.versionCreated, true);
-  assert.equal(r.applied['signals.trend.params.slow'], 60, 'clamped to the whitelist max');
+  assert.equal(r.applied['signals.trend.params.slow'], 25, 'within the 20%/2-step budget');
   assert.equal(r.applied['risk.perTrade'], undefined, 'non-whitelisted path ignored');
   assert.equal(engine.status().versions.length, 2);
-  assert.equal(engine.status().versions[1].strategy.signals[0].params.slow, 60);
+  assert.equal(engine.status().versions[1].strategy.signals[0].params.slow, 25);
   assert.equal(engine.status().versions[1].strategy.plan?.maxTradesPerDay, 3, 'untouched plan survives the fork');
+});
+
+test('reflection rejects an over-large parameter jump (anti-overfit)', async (t) => {
+  const llmOut = JSON.stringify({ critique: 'x', params: { 'signals.trend.params.slow': 60 } });
+  const { engine } = makeEngine(t, { llm: async () => llmOut });
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.applied['signals.trend.params.slow'], undefined, '20→60 is beyond the allowed jump');
+  assert.equal(r.versionCreated, false);
 });
 
 test('explicit qty is floored to the product lot size', async (t) => {
@@ -154,15 +162,15 @@ test('explicit qty is floored to the product lot size', async (t) => {
 
 test('evolved risk parameters drive the stop-loss gate', async (t) => {
   let action = { action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 };
-  const reflectOut = JSON.stringify({ critique: '收紧止损', params: { 'risk.stopLossPct': -1 } });
+  const reflectOut = JSON.stringify({ critique: '收紧止损', params: { 'risk.stopLossPct': -4 } });
   let llmOut = JSON.stringify(action);
   const { engine, state } = makeEngine(t, { llm: async () => llmOut, settlement: 'T+0' });
   await engine.runCycle();
   llmOut = reflectOut;
   const r = await engine.reflectIfDue({ force: true });
-  assert.equal(r.applied['risk.stopLossPct'], -1, 'risk param applied');
+  assert.equal(r.applied['risk.stopLossPct'], -4, 'risk param applied');
   llmOut = JSON.stringify({ action: 'hold', confidence: 0.6 });
-  state.price = 9.8; // -2% vs 10 → beyond the evolved -1% stop
+  state.price = 9.5; // -5% vs 10 → beyond the evolved -4% stop
   const res = await engine.runCycle();
   assert.equal(res.trades.length, 1, JSON.stringify(res));
   assert.match(res.decision.reason, /风控/);
@@ -231,15 +239,49 @@ test('migrated versions with empty signals/risk are backfilled from the product'
   const { product } = makeProduct();
   const engine = createProductEngine({
     db, product, fetchFn: async () => ({ ok: true }),
-    llm: async () => JSON.stringify({ critique: 'x', params: { 'risk.stopLossPct': -2 } }),
+    llm: async () => JSON.stringify({ critique: 'x', params: { 'risk.stopLossPct': -4.5 } }),
     now: () => OPEN,
   });
   const st = engine.status();
   assert.ok(st.currentVersion.strategy.signals.length > 0, 'signals backfilled from the product');
   assert.ok(Object.keys(st.currentVersion.strategy.risk).length > 0, 'risk backfilled');
   const r = await engine.reflectIfDue({ force: true });
-  assert.equal(r.applied['risk.stopLossPct'], -2, 'whitelisted path applies to the backfilled version');
+  assert.equal(r.applied['risk.stopLossPct'], -4.5, 'whitelisted path applies to the backfilled version');
   assert.equal(r.versionCreated, true);
+});
+
+test('total-drawdown circuit breaker blocks new trades', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-breaker-'));
+  const db = openDb(join(dir, 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const state = { price: 10 };
+  const product = normalizeProduct({
+    id: 'brk', name: 'BRK', currency: 'CNY', timezone: 'Asia/Shanghai',
+    capital: { initialRmb: 100000, maxExposureRmb: 100000 },
+    market: {
+      kind: 'multi',
+      async quote() {
+        return { ts: Date.now(), currency: 'CNY', quotes: [{ symbol: 'x', price: state.price, prevClose: 10, open: 10, volume: 1 }] };
+      },
+    },
+    universe: { watchlist: () => [{ symbol: 'x', name: 'X' }], lotSize: 100 },
+    news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
+    strategy: { indicators: [], signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, plan: {}, prompt: {}, decision: {}, evolvable: [] },
+    rules: { unit: 'share', lotSize: 100, settlement: 'T+0', fees: {}, sessions: [[570, 690]], holidays: [] },
+    risk: { perTrade: 60000, perSymbolPct: 100, circuitBreakerPct: -10, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50 },
+  });
+  let llmOut = JSON.stringify({ action: 'buy', symbol: 'x', amount: 50000, confidence: 0.9 });
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => llmOut, now: () => OPEN,
+  });
+  await engine.runCycle();
+  state.price = 8; // -20% on a 50k position → -10% account drawdown
+  llmOut = JSON.stringify({ action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 });
+  const res = await engine.runCycle();
+  assert.equal(res.circuitBreaker, true, JSON.stringify(res));
+  assert.equal(res.trades.length, 0);
+  assert.match(res.decision.reason, /熔断/);
 });
 
 test('stop loss forces a sell on the next cycle (T+0 product)', async (t) => {

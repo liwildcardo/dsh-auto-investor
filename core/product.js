@@ -31,6 +31,7 @@ const DEFAULTS = {
     perTrade: 5000, // native currency amount
     perSymbolPct: 100,
     dailyLossPct: -2,
+    circuitBreakerPct: -15, // total drawdown from the initial capital stops new trades
     stopLossPct: -3,
     takeProfitPct: 6,
   },

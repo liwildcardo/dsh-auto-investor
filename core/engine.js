@@ -432,6 +432,16 @@ export function createProductEngine({
     await tick().catch(() => {});
     if (!quote) return jsonSafe({ decision: { action: 'hold', reason: 'no quote' }, trades: [], llmError: null, paused });
     if (paused) return jsonSafe({ decision: { action: 'hold', reason: 'paused' }, trades: [], llmError: null, paused: true });
+    // Total-drawdown circuit breaker: stop opening new trades once the account
+    // is down by the configured percentage from its starting capital.
+    const snap0 = snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null);
+    const drawdownPct = ((snap0.totalPnl) / (account.initial || 1)) * 100;
+    const breakerPct = effectiveRisk().circuitBreakerPct;
+    if (Number.isFinite(breakerPct) && drawdownPct <= breakerPct) {
+      const decision = { action: 'hold', reason: `总回撤熔断(${drawdownPct.toFixed(2)}%)，暂停新交易`, confidence: 0 };
+      lastRun = { decision, trades: [], rejection: null, llmError: null };
+      return jsonSafe({ decision, trades: [], rejection: null, llmError: null, paused, circuitBreaker: true, ingest: lastIngest });
+    }
     if (newsIngest) {
       try { lastIngest = await newsIngest(); } catch { /* news is best-effort */ }
     }
@@ -571,18 +581,51 @@ export function createProductEngine({
     return true;
   }
 
+  /** Read a nested path (array entries by signal id). */
+  function getPath(obj, path) {
+    const parts = String(path).split('.');
+    let cur = obj;
+    for (const k of parts) {
+      if (cur == null) return undefined;
+      if (Array.isArray(cur) && !/^\d+$/.test(k)) {
+        const idx = cur.findIndex(x => x?.id === k);
+        if (idx < 0) return undefined;
+        cur = cur[idx];
+      } else {
+        cur = cur[k];
+      }
+    }
+    return cur;
+  }
+
   /** Apply only whitelisted, bounded parameter changes; returns applied patches. */
   function applyParams(target, params) {
     const whitelist = cfg.strategy.evolvable ?? [];
     const applied = {};
+    let changes = 0;
     for (const [path, raw] of Object.entries(params ?? {})) {
+      if (changes >= 3) break; // anti-overfit: at most three parameters per review
       const spec = whitelist.find(w => w.path === path);
       if (!spec) continue;
       let value = Number(raw);
       if (!Number.isFinite(value)) continue;
       if (Number.isFinite(spec.min)) value = Math.max(spec.min, value);
       if (Number.isFinite(spec.max)) value = Math.min(spec.max, value);
-      if (setPath(target, path, value)) applied[path] = value;
+      if (Number.isFinite(spec.step) && spec.step > 0) {
+        const base = Number.isFinite(spec.min) ? spec.min : 0;
+        value = base + Math.round((value - base) / spec.step) * spec.step;
+      }
+      const currentValue = Number(getPath(target, path));
+      if (Number.isFinite(currentValue)) {
+        // Anti-overfit: at most 20% change per review, but never less than two
+        // discrete steps (otherwise a coarse step size freezes the parameter).
+        const allowed = Math.max(Math.abs(currentValue) * 0.2, 2 * (Number(spec.step) || 0));
+        if (Math.abs(value - currentValue) > allowed + 1e-9) continue;
+      }
+      if (setPath(target, path, value)) {
+        applied[path] = value;
+        changes += 1;
+      }
     }
     return applied;
   }
