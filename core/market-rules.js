@@ -41,10 +41,11 @@ export function isSessionOpen(rules, ts, timeZone) {
   return false;
 }
 
-/** Floor a quantity to the product's lot size (gold keeps fractional grams). */
-export function roundLot(rules, qty) {
+/** Floor a quantity to the product's lot size (per-symbol override honoured). */
+export function roundLot(rules, qty, symbol = null) {
   if (rules.unit === 'gram') return Math.floor(qty * 1000) / 1000;
-  const lot = Math.max(1, Math.floor(rules.lotSize ?? 1));
+  const perSymbol = symbol != null && typeof rules.lotSizeFor === 'function' ? rules.lotSizeFor(symbol) : null;
+  const lot = Math.max(1, Math.floor(perSymbol ?? rules.lotSize ?? 1));
   return Math.floor(qty / lot) * lot;
 }
 
@@ -61,32 +62,38 @@ export function tradeFees(rules, side, notional) {
   return { commission, stampDuty, transferFee, regulator, total };
 }
 
-/** Add whole calendar days in the market timezone, skipping weekends/holidays. */
+/**
+ * Settlement unlock: the first session start of the next trading day (T+1) or
+ * two trading days out (T+2), skipping weekends/holidays.
+ */
 export function earliestSellTs(buyTs, rules, timeZone) {
   const delay = rules.settlement === 'T+2' ? 2 : rules.settlement === 'T+1' ? 1 : 0;
   if (delay === 0) return buyTs;
-  const DAY = 86_400_000;
+  const startMin = rules.sessions?.[0]?.[0] ?? 0;
+  let remaining = delay;
   let ts = buyTs;
-  let added = 0;
-  while (added < delay) {
-    ts += DAY;
+  for (let guard = 0; guard < 10; guard += 1) {
+    ts += 86_400_000;
     const z = zonedParts(ts, timeZone);
-    if (!isWeekend(z.weekday) && !(rules.holidays ?? []).includes(z.date)) added += 1;
+    if (isWeekend(z.weekday) || (rules.holidays ?? []).includes(z.date)) continue;
+    remaining -= 1;
+    if (remaining === 0) return ts + (startMin - z.minutes) * 60_000;
   }
   return ts;
 }
 
 /** Price band for limit-up/limit-down products; null when unconstrained. */
-export function priceLimitBand(rules, prevClose) {
+export function priceLimitBand(rules, prevClose, symbol = null) {
   if (!Number.isFinite(prevClose) || prevClose <= 0) return null;
-  const pct = rules.boardLimitPct ?? rules.priceLimit;
+  const perSymbol = symbol != null && typeof rules.limitFor === 'function' ? rules.limitFor(symbol) : null;
+  const pct = perSymbol ?? rules.boardLimitPct ?? rules.priceLimit;
   if (!Number.isFinite(pct) || pct <= 0) return null;
   return { up: prevClose * (1 + pct / 100), down: prevClose * (1 - pct / 100) };
 }
 
 /** Whether a fill price is inside the allowed band (null band = always true). */
-export function withinPriceBand(rules, prevClose, price) {
-  const band = priceLimitBand(rules, prevClose);
+export function withinPriceBand(rules, prevClose, price, symbol = null) {
+  const band = priceLimitBand(rules, prevClose, symbol);
   if (!band) return true;
   return price <= band.up + 1e-9 && price >= band.down - 1e-9;
 }

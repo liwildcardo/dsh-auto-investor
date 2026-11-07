@@ -22,10 +22,17 @@ function makeProduct(overrides = {}) {
     market: {
       kind: 'multi',
       async quote() {
-        return { ts: Date.now(), currency: 'CNY', quotes: [{ symbol: 'x', price: state.price, prevClose: state.prevClose, open: 10, volume: state.volume }] };
+        return {
+          ts: Date.now(),
+          currency: 'CNY',
+          quotes: [
+            { symbol: 'x', price: state.price, prevClose: state.prevClose, open: 10, volume: state.volume },
+            { symbol: 'y', price: state.price, prevClose: state.prevClose, open: 10, volume: state.volume },
+          ],
+        };
       },
     },
-    universe: { watchlist: () => [{ symbol: 'x', name: 'X' }], lotSize: 100 },
+    universe: { watchlist: () => [{ symbol: 'x', name: 'X' }, { symbol: 'y', name: 'Y' }], lotSize: 100 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
     strategy: {
       indicators: [],
@@ -33,7 +40,10 @@ function makeProduct(overrides = {}) {
       candidates: { threshold: 0.8 },
       prompt: { role: 't', heuristics: [], constraints: [] },
       decision: { actions: ['buy', 'sell', 'hold'], shape: 'symbol+shares' },
-      evolvable: [{ path: 'signals.0.params.slow', min: 10, max: 60, step: 5 }],
+      evolvable: [
+        { path: 'signals.trend.params.slow', min: 10, max: 60, step: 5 },
+        { path: 'risk.stopLossPct', min: -12, max: -1, step: 0.5 },
+      ],
     },
     rules: {
       unit: 'share', lotSize: 100, settlement: overrides.settlement ?? 'T+1',
@@ -119,16 +129,52 @@ test('closed session rejects the fill', async (t) => {
 test('reflection applies only whitelisted, clamped parameters and forks a version', async (t) => {
   const llmOut = JSON.stringify({
     critique: '趋势参数偏慢，需缩短',
-    params: { 'signals.0.params.slow': 200, 'risk.perTrade': 999999 },
+    params: { 'signals.trend.params.slow': 200, 'risk.perTrade': 999999 },
   });
   const { engine } = makeEngine(t, { llm: async () => llmOut });
   const r = await engine.reflectIfDue({ force: true });
   assert.equal(r.reflected, true);
   assert.equal(r.versionCreated, true);
-  assert.equal(r.applied['signals.0.params.slow'], 60, 'clamped to the whitelist max');
+  assert.equal(r.applied['signals.trend.params.slow'], 60, 'clamped to the whitelist max');
   assert.equal(r.applied['risk.perTrade'], undefined, 'non-whitelisted path ignored');
   assert.equal(engine.status().versions.length, 2);
   assert.equal(engine.status().versions[1].strategy.signals[0].params.slow, 60);
+});
+
+test('explicit qty is floored to the product lot size', async (t) => {
+  const { engine } = makeEngine(t, {
+    llm: async () => JSON.stringify({ action: 'buy', symbol: 'x', qty: 150, confidence: 0.9 }),
+  });
+  const res = await engine.runCycle();
+  assert.equal(res.trades.length, 1, JSON.stringify(res));
+  assert.equal(res.trades[0].qty, 100, '150 shares → one 100-share lot');
+});
+
+test('evolved risk parameters drive the stop-loss gate', async (t) => {
+  let action = { action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 };
+  const reflectOut = JSON.stringify({ critique: '收紧止损', params: { 'risk.stopLossPct': -1 } });
+  let llmOut = JSON.stringify(action);
+  const { engine, state } = makeEngine(t, { llm: async () => llmOut, settlement: 'T+0' });
+  await engine.runCycle();
+  llmOut = reflectOut;
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.applied['risk.stopLossPct'], -1, 'risk param applied');
+  llmOut = JSON.stringify({ action: 'hold', confidence: 0.6 });
+  state.price = 9.8; // -2% vs 10 → beyond the evolved -1% stop
+  const res = await engine.runCycle();
+  assert.equal(res.trades.length, 1, JSON.stringify(res));
+  assert.match(res.decision.reason, /风控/);
+});
+
+test('per-symbol and total exposure caps are independent', async (t) => {
+  const { engine } = makeEngine(t, {
+    llm: async () => JSON.stringify({ action: 'buy', symbol: 'x', amount: 10000, confidence: 0.9 }),
+  });
+  assert.equal((await engine.runCycle()).trades.length, 1, 'first fill within the per-symbol cap');
+  assert.equal((await engine.runCycle()).trades.length, 1, 'second fill still under 25%');
+  const third = await engine.runCycle();
+  assert.equal(third.trades.length, 0, 'third fill would exceed the per-symbol cap');
+  assert.match(third.rejection ?? '', /单标的敞口/);
 });
 
 test('stop loss forces a sell on the next cycle (T+0 product)', async (t) => {

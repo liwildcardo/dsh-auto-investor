@@ -14,14 +14,17 @@ export function migrateGoldState(db) {
   if (!portfolio && !versions && reflections == null) return { migrated: false };
 
   if (portfolio) {
-    // 克重组合 → 多标的账户（AU9999 持仓）
-    const grams = Number(portfolio.grams ?? 0);
+    // 克重组合 → 多标的账户（AU9999 持仓；活期+定期克重合并，成本加权）
+    const demand = Number(portfolio.grams ?? 0);
+    const term = Number(portfolio.termGrams ?? 0);
+    const total = demand + term;
+    const costAvg = Number(portfolio.costAvg ?? 0);
     const account = {
       currency: 'CNY',
       cash: Number(portfolio.cash ?? 100000),
-      initial: 100000,
-      positions: grams > 0
-        ? { AU9999: { qty: grams, costAvg: Number(portfolio.costAvg ?? 0), earliestSellTs: 0 } }
+      initial: Number(portfolio.initial ?? 100000),
+      positions: total > 0
+        ? { AU9999: { qty: total, costAvg, earliestSellTs: 0, lots: [{ qty: total, cost: costAvg, earliestSellTs: 0 }] } }
         : {},
       realizedPnl: Number(portfolio.realizedPnl ?? 0),
       invested: Number(portfolio.investedRmb ?? 0),
@@ -34,11 +37,19 @@ export function migrateGoldState(db) {
       id: v.id,
       createdAt: v.createdAt ?? 0,
       strategy: {
-        signals: v.strategy?.signals ?? [],
+        signals: v.strategy?.signals ?? [],   // legacy versions had no rule params; engine falls back
         risk: v.strategy?.risk ?? {},
         plan: v.strategy?.plan ?? {},
       },
       critique: v.strategy?.critique ?? null,
+      // Preserve the historical performance fields so the UI still shows them.
+      trades: v.trades ?? 0,
+      wins: v.wins ?? 0,
+      fills: v.fills ?? 0,
+      returnPnl: v.returnPnl ?? 0,
+      peakPnl: v.peakPnl ?? 0,
+      maxDrawdownPnl: v.maxDrawdownPnl ?? 0,
+      reference: v.reference === true,
       startPnl: v.startPnl ?? 0,
       retired: v.retired === true,
     })));
@@ -49,5 +60,6 @@ export function migrateGoldState(db) {
   if (Array.isArray(decisions)) db.putState('product:gold:decisions', decisions);
   if (paused != null) db.putState('product:gold:paused', paused === true);
   if (lastReflectAt != null) db.putState('product:gold:lastReflectAt', lastReflectAt);
+  db.putState('product:gold:migratedFrom', 'legacy-gold-v1');
   return { migrated: true };
 }

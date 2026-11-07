@@ -21,6 +21,8 @@
   "files": [
     "index.js",
     "client.js",
+    "core/**/*.js",
+    "products/**/*.js",
     "lib/*.js",
     "cordis.patch.yml",
     "locale/*.json",

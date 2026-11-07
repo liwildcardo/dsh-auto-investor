@@ -30,6 +30,13 @@ export function createProductEngine({
   let lastReflectAt = db.getState(pkey('lastReflectAt')) ?? now();
 
   const current = () => versions[versions.length - 1];
+  // Version-evolved risk wins over the product defaults (whitelisted + clamped).
+  const effectiveRisk = () => ({ ...(cfg.risk ?? {}), ...(current().strategy?.risk ?? {}) });
+  // A migrated version may have no signals yet: fall back to the product's set.
+  const activeSignals = () => {
+    const v = current().strategy?.signals;
+    return Array.isArray(v) && v.length ? v : (cfg.strategy.signals ?? []);
+  };
   const persist = () => {
     db.putState(pkey('account'), account);
     db.putState(pkey('versions'), versions.map(v => ({ ...v, strategy: stripFns(v.strategy) })));
@@ -81,8 +88,11 @@ export function createProductEngine({
             price: r.price, open: r.open ?? null, volume: r.volume ?? null,
           });
         }
-        if (rows.length) db.putState(key, now());
-      } catch { /* leave unseeded; retried after the throttle */ }
+      } catch { /* leave unseeded */ } finally {
+        // Record the attempt even on failure so a dead endpoint is not retried
+        // on every price tick (throttled to once per 30 minutes).
+        db.putState(key, now());
+      }
     }
   }
 
@@ -141,7 +151,7 @@ export function createProductEngine({
 
   function evaluateSymbol(symbol, news = []) {
     const series = seriesFor(symbol);
-    const signals = evaluateSignals(current().strategy.signals ?? cfg.strategy.signals, {
+    const signals = evaluateSignals(activeSignals(), {
       series, volumes: volumesFor(symbol), news,
     });
     const score = compositeScore(signals);
@@ -228,14 +238,25 @@ export function createProductEngine({
     return db.listTradesByProduct(product.id, 200).filter(t => zonedParts(t.ts, product.timezone).date === today);
   }
 
+  function dayOpenPrices() {
+    return db.getState(pkey(`dayOpen:${sessionDate()}`)) ?? {};
+  }
+
   function dailyLossHit() {
-    const total = snapshotOf(account, priceOf).totalPnl;
-    const base = account.initial + (current().startPnl ?? 0);
-    return base > 0 && (total - current().startPnl) / base * 100 <= (cfg.risk?.dailyLossPct ?? -2);
+    const risk = effectiveRisk();
+    const snap = snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null);
+    const base = account.initial || 1;
+    return snap.todayPnl / base * 100 <= (risk.dailyLossPct ?? -2);
   }
 
   function exposureOf() {
     return snapshotOf(account, priceOf).positionsValue;
+  }
+
+  function symbolValue(symbol) {
+    const pos = account.positions[symbol];
+    const price = priceOf(symbol);
+    return pos && Number.isFinite(price) ? (pos.qty ?? 0) * price : 0;
   }
 
   function fillPrice(side, symbol) {
@@ -246,26 +267,30 @@ export function createProductEngine({
   }
 
   function buyQuantity(decision, symbol, price) {
-    if (decision.qty != null && decision.qty > 0) return decision.qty;
-    const amount = decision.amount ?? cfg.risk?.perTrade ?? 0;
-    return roundLot(cfg.rules, amount / price);
+    const raw = decision.qty != null && decision.qty > 0
+      ? decision.qty
+      : (decision.amount ?? effectiveRisk().perTrade ?? 0) / price;
+    return roundLot(cfg.rules, raw, symbol); // lot discipline applies to explicit qty too
   }
 
   function execute(decision) {
     const symbol = decision.symbol ?? (product.market.kind === 'single' ? (product.universe.watchlist(cfg)[0]?.symbol ?? product.id) : null);
     if (!symbol) return { ok: false, reason: '缺目标标的' };
+    const risk = effectiveRisk();
+    const maxAgeSec = risk.quoteMaxAgeSec ?? 300;
+    if (now() - quoteTs > maxAgeSec * 1000) return { ok: false, reason: '行情过期，拒绝成交' };
     const price = fillPrice(decision.action, symbol);
     if (!Number.isFinite(price) || price <= 0) return { ok: false, reason: '无有效行情' };
 
     if (!isSessionOpen(cfg.rules, now(), cfg.timezone)) return { ok: false, reason: '非交易时段' };
 
     const prevClose = prevCloseOf(symbol);
-    if (!withinPriceBand(cfg.rules, prevClose, price)) return { ok: false, reason: '超出涨跌停价格区间' };
+    if (!withinPriceBand(cfg.rules, prevClose, price, symbol)) return { ok: false, reason: '超出涨跌停价格区间' };
 
     // Frequency discipline.
     const dayTrades = tradesToday();
     const plan = current().strategy?.plan ?? {};
-    const maxPerDay = Math.min(plan.maxTradesPerDay ?? 3, cfg.risk?.maxTradesPerDay ?? 3);
+    const maxPerDay = Math.min(plan.maxTradesPerDay ?? 3, risk.maxTradesPerDay ?? 3);
     if (dayTrades.length >= maxPerDay) return { ok: false, reason: `已达每日交易上限(${maxPerDay})` };
     const minGap = (plan.minIntervalHours ?? 0) * 3600_000;
     const lastTrade = dayTrades[0];
@@ -275,11 +300,14 @@ export function createProductEngine({
       const qty = buyQuantity(decision, symbol, price);
       if (!(qty > 0)) return { ok: false, reason: '数量不足一手' };
       const notional = qty * price;
-      const limit = Math.min(cfg.risk?.perTrade ?? notional, notional);
-      if (notional > (cfg.risk?.perTrade ?? Infinity) + 1e-6) return { ok: false, reason: `超过单笔上限 ${cfg.risk.perTrade}` };
-      const perSymbolCap = (account.initial * (cfg.risk?.perSymbolPct ?? 100)) / 100;
-      if (exposureOf() + notional > Math.min(cfg.capital?.maxExposureRmb ?? account.initial, perSymbolCap)) {
-        return { ok: false, reason: '超过单标的/总敞口上限' };
+      if (notional > (risk.perTrade ?? Infinity) + 1e-6) return { ok: false, reason: `超过单笔上限 ${risk.perTrade}` };
+      const perSymbolCap = (account.initial * (risk.perSymbolPct ?? 100)) / 100;
+      if (symbolValue(symbol) + notional > perSymbolCap + 1e-6) {
+        return { ok: false, reason: '超过单标的敞口上限' };
+      }
+      const totalCap = cfg.capital?.maxExposureRmb ?? account.initial;
+      if (exposureOf() + notional > totalCap + 1e-6) {
+        return { ok: false, reason: '超过总敞口上限' };
       }
       const fee = tradeFees(cfg.rules, 'buy', notional).total;
       if (notional + fee > account.cash + 1e-9) return { ok: false, reason: '现金不足' };
@@ -292,7 +320,7 @@ export function createProductEngine({
       const pos = positionOf(account, symbol);
       if (!pos) return { ok: false, reason: '无持仓可卖' };
       const qty = decision.qty != null ? Math.min(decision.qty, pos.qty) : pos.qty;
-      const sellQty = cfg.rules.unit === 'gram' ? qty : roundLot(cfg.rules, qty);
+      const sellQty = cfg.rules.unit === 'gram' ? qty : roundLot(cfg.rules, qty, symbol);
       if (!(sellQty > 0)) return { ok: false, reason: '卖出数量为0' };
       const notional = sellQty * price;
       const fee = tradeFees(cfg.rules, 'sell', notional).total;
@@ -308,12 +336,13 @@ export function createProductEngine({
   }
 
   function riskCheck() {
-    const stop = cfg.risk?.stopLossPct;
-    const take = cfg.risk?.takeProfitPct;
+    const risk = effectiveRisk();
+    const stop = risk.stopLossPct;
+    const take = risk.takeProfitPct;
     for (const symbol of Object.keys(account.positions)) {
       const p = account.positions[symbol];
       const price = priceOf(symbol);
-      if (!Number.isFinite(price)) continue;
+      if (!Number.isFinite(price) || !(p.costAvg > 0)) continue;
       const pct = ((price - p.costAvg) / p.costAvg) * 100;
       if (Number.isFinite(stop) && pct <= stop) return { kind: 'stop-loss', symbol, pct };
       if (Number.isFinite(take) && pct >= take) return { kind: 'take-profit', symbol, pct };
@@ -323,7 +352,19 @@ export function createProductEngine({
 
   /* -------------------------------- cycle ---------------------------------- */
 
+  let running = false;
+
   async function runCycle() {
+    if (running) return jsonSafe({ busy: true, decision: { action: 'hold', reason: '上一轮分析仍在进行' }, trades: [], llmError: null, paused });
+    running = true;
+    try {
+      return await runCycleInner();
+    } finally {
+      running = false;
+    }
+  }
+
+  async function runCycleInner() {
     // Refresh quotes every cycle: gates and risk checks must see current prices.
     await tick().catch(() => {});
     if (!quote) return jsonSafe({ decision: { action: 'hold', reason: 'no quote' }, trades: [], llmError: null, paused });
@@ -357,7 +398,7 @@ export function createProductEngine({
         llmError = String(e?.message ?? e).slice(0, 300);
       }
       if (!decision) decision = { action: 'hold', reason: 'fallback hold', confidence: 0 };
-      if (decision.action !== 'hold' && (decision.confidence ?? 0) < (cfg.risk?.minConfidence ?? 0.55)) {
+      if (decision.action !== 'hold' && (decision.confidence ?? 0) < (effectiveRisk().minConfidence ?? 0.55)) {
         decision = { action: 'hold', reason: `置信度不足(${decision.confidence})`, confidence: decision.confidence };
       }
       if (dailyLossHit() && decision.action !== 'hold') {
@@ -372,6 +413,10 @@ export function createProductEngine({
     }
     if (lastIngest) lastIngest = { ...lastIngest };
     lastRun = { decision, trades, rejection, llmError };
+    // Persist decisions so reflection after a restart still sees what was done.
+    const journal = db.getState(pkey('decisions')) ?? [];
+    journal.push({ ts: now(), decision, trades, rejection, llmError });
+    db.putState(pkey('decisions'), journal.slice(-50));
     persist();
     return jsonSafe({ decision, trades, rejection, llmError, paused, quoteTs, ingest: lastIngest });
   }
@@ -379,7 +424,7 @@ export function createProductEngine({
   /* -------------------------------- status --------------------------------- */
 
   function status() {
-    const snap = snapshotOf(account, priceOf);
+    const snap = snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null);
     const watchSymbol = cfg.universe.watchlist(cfg)[0]?.symbol ?? product.id;
     const series = product.market.kind === 'single'
       ? db.latestTicksByProduct(product.id, 120).map(t => ({ ts: t.ts, price: t.price }))
@@ -426,8 +471,15 @@ export function createProductEngine({
     let cur = obj;
     for (let i = 0; i < parts.length - 1; i += 1) {
       const k = parts[i];
-      if (cur[k] == null || typeof cur[k] !== 'object') return false;
-      cur = cur[k];
+      // `signals.<signalId>...` addresses the array entry by id, not by index.
+      if (Array.isArray(cur) && !/^\d+$/.test(k)) {
+        const idx = cur.findIndex(x => x?.id === k);
+        if (idx < 0) return false;
+        cur = cur[idx];
+      } else {
+        if (cur[k] == null || typeof cur[k] !== 'object') return false;
+        cur = cur[k];
+      }
     }
     const leaf = parts[parts.length - 1];
     if (!(leaf in cur)) return false;
@@ -452,6 +504,7 @@ export function createProductEngine({
   }
 
   function buildReflectPrompt(stats) {
+    const lastDecision = (db.getState(pkey('decisions')) ?? []).at(-1)?.decision ?? lastRun?.decision ?? null;
     return [
       `你是${cfg.name}策略复盘引擎。请检讨当前策略版本的表现并给出改进。`,
       '',
@@ -462,7 +515,7 @@ export function createProductEngine({
       JSON.stringify(stats, null, 2),
       '',
       '## 最近决策',
-      JSON.stringify(lastRun?.decision ?? null, null, 2),
+      JSON.stringify(lastDecision, null, 2),
       '',
       '## 可调整参数（只能改这些路径，且受上下界约束）',
       ...(cfg.strategy.evolvable ?? []).map(w => `- ${w.path} ∈ [${w.min}, ${w.max}] step ${w.step}`),
@@ -473,7 +526,7 @@ export function createProductEngine({
 
   async function reflectIfDue({ force = false } = {}) {
     const stats = versionStats();
-    const lossTriggered = stats.returnPct <= (cfg.risk?.reflectLossPct ?? -3);
+    const lossTriggered = stats.returnPct <= (effectiveRisk().reflectLossPct ?? -3);
     const intervalMs = (cfg.reflectIntervalHours ?? 24) * 3600_000;
     const periodicDue = now() - lastReflectAt >= intervalMs;
     if (!force && !lossTriggered && !periodicDue) return jsonSafe({ reflected: false, stats });

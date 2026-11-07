@@ -57,6 +57,7 @@ test('结算：A股T+1跳过周末、港股T+2、黄金T+0', () => {
   const aSell = earliestSellTs(friday, P.ashare.rules, P.ashare.timezone);
   const aDay = zonedParts(aSell, P.ashare.timezone);
   assert.equal(aDay.date, '2026-11-09'); // 周五买入 → 下周一可卖
+  assert.equal(aDay.minutes, 570, 'unlocks at the next session open (09:30), not buy time + 24h');
   const hkSell = earliestSellTs(friday, P.hk.rules, P.hk.timezone);
   assert.equal(zonedParts(hkSell, P.hk.timezone).date, '2026-11-10');
   assert.equal(earliestSellTs(friday, P.gold.rules, P.gold.timezone), friday);
@@ -69,4 +70,16 @@ test('涨跌停：A股±10%限制、美股无限制', () => {
   assert.equal(withinPriceBand(P.ashare.rules, 10, 11), true);
   assert.equal(withinPriceBand(P.ashare.rules, 10, 11.01), false);
   assert.equal(withinPriceBand(P.us.rules, 100, 500), true);
+});
+
+test('涨跌停按板块区分：创业板/科创板 ±20%，主板 ±10%', () => {
+  assert.equal(priceLimitBand(P.ashare.rules, 10, 'sz300750').up, 12);
+  assert.equal(priceLimitBand(P.ashare.rules, 10, 'sh688981').up, 12);
+  assert.equal(priceLimitBand(P.ashare.rules, 10, 'sh600519').up, 11);
+});
+
+test('港股按每手股数成交', () => {
+  assert.equal(roundLot(P.hk.rules, 150, 'hk00941'), 0);   // 500 股/手
+  assert.equal(roundLot(P.hk.rules, 600, 'hk00941'), 500);
+  assert.equal(roundLot(P.hk.rules, 250, 'hk01810'), 200); // 200 股/手
 });

@@ -8,14 +8,18 @@ import { migrateGoldState } from '../core/migrate.js';
 import { scoreRelevance, relevant } from '../lib/news.js';
 import { createProductEngine } from '../core/engine.js';
 import { createHub } from '../core/hub.js';
+import { registerRoutes } from '../lib/routes.js';
 import { loadProducts } from '../core/registry.js';
 import { fetchMinuteHistory } from '../core/quotes.js';
 
 test('gold-era state migrates into the product:gold namespace once', (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-mig-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
-  db.putState('portfolio', { cash: 95000, grams: 5, termGrams: 0, costAvg: 875, realizedPnl: 12, investedRmb: 4375 });
-  db.putState('versions', [{ id: 1, createdAt: 1, strategy: { plan: { maxTradesPerDay: 2 } }, startPnl: 0 }]);
+  db.putState('portfolio', { cash: 95000, grams: 2, termGrams: 3, costAvg: 875, realizedPnl: 12, investedRmb: 4375 });
+  db.putState('versions', [{
+    id: 1, createdAt: 1, strategy: { plan: { maxTradesPerDay: 2 } }, startPnl: 0,
+    trades: 4, wins: 2, fills: 6, peakPnl: 30, maxDrawdownPnl: -12, reference: true,
+  }]);
   db.putState('reflections', [{ ts: 1, critique: 'ok' }]);
   db.putState('paused', false);
   db.putState('lastReflectAt', 42);
@@ -24,8 +28,14 @@ test('gold-era state migrates into the product:gold namespace once', (t) => {
   assert.equal(r1.migrated, true);
   const acct = db.getState('product:gold:account');
   assert.equal(acct.cash, 95000);
-  assert.equal(acct.positions.AU9999.qty, 5);
+  assert.equal(acct.positions.AU9999.qty, 5, 'demand + term grams both migrate');
   assert.equal(acct.positions.AU9999.costAvg, 875);
+  const v = db.getState('product:gold:versions')[0];
+  assert.equal(v.trades, 4, 'historical trade count preserved');
+  assert.equal(v.wins, 2);
+  assert.equal(v.maxDrawdownPnl, -12);
+  assert.equal(v.reference, true);
+  assert.deepEqual(v.strategy.signals, [], 'legacy version has no rule params (engine falls back)');
   assert.equal(db.getState('product:gold:reflections').length, 1);
   assert.equal(db.getState('product:gold:lastReflectAt'), 42);
 
@@ -81,6 +91,33 @@ test('minute history parses Tencent rows (fallback when daily bars are thin)', a
   assert.equal(rows.length, 2);
   assert.equal(rows[1].price, 420.5);
   assert.ok(Number.isFinite(rows[0].ts));
+});
+
+test('productConfig overrides deep-merge (risk defaults survive)', () => {
+  const [p] = loadProducts({ enabled: ['ashare'], overrides: { ashare: { risk: { perTrade: 8000 } } } });
+  assert.equal(p.risk.perTrade, 8000, 'override applied');
+  assert.equal(p.risk.perSymbolPct, 25, 'sibling risk defaults kept');
+  assert.equal(p.risk.stopLossPct, -5, 'other risk defaults kept');
+});
+
+test('hub routes reject an unknown product instead of falling back to gold', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-hubr-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const products = loadProducts({ enabled: ['gold', 'ashare'] });
+  const engines = products.map(p => createProductEngine({
+    db, product: p, fetchFn: async () => ({ ok: true }),
+    llm: async () => JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 }),
+    now: () => Date.UTC(2026, 10, 2, 2, 0),
+  }));
+  const hub = createHub({ engines, products });
+  const routes = [];
+  const ctx = { connection: { fetch: { register: (r) => { routes.push(r); return () => {}; } } } };
+  registerRoutes(ctx, hub, { lastRun: null });
+  const stateRoute = routes.find(r => r.path === '/api/auto-investor/state');
+  const res = await stateRoute.fetch({ url: 'http://local/api/auto-investor/state?product=bogus' });
+  assert.equal(res.status, 400);
+  const ok = await stateRoute.fetch({ url: 'http://local/api/auto-investor/state?product=ashare' });
+  assert.equal(ok.status, 200);
 });
 
 test('hub dispatches calls to the right product engine', async (t) => {

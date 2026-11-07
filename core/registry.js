@@ -9,6 +9,18 @@ import { normalizeProduct } from './product.js';
 
 export const BUILTIN = [gold, ashare, us, hk];
 
+const isObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+
+/** Deep-merge an override into a product (arrays/functions replace wholesale). */
+export function mergeProduct(base, extra) {
+  if (!isObj(base) || !isObj(extra)) return extra === undefined ? base : extra;
+  const out = { ...base };
+  for (const [k, v] of Object.entries(extra)) {
+    out[k] = isObj(v) && isObj(base[k]) ? mergeProduct(base[k], v) : v;
+  }
+  return out;
+}
+
 /**
  * @param {object} opts
  * @param {string[]} [opts.enabled]  enabled product ids (default: all builtins)
@@ -20,6 +32,6 @@ export function loadProducts(opts = {}) {
   const overrides = opts.overrides ?? {};
   return BUILTIN
     .filter(p => enabled.includes(p.id))
-    .map(p => normalizeProduct(overrides[p.id] ? { ...p, ...overrides[p.id] } : p))
+    .map(p => normalizeProduct(overrides[p.id] ? mergeProduct(p, overrides[p.id]) : p))
     .sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
 }
