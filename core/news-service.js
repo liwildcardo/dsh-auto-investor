@@ -15,19 +15,28 @@ export function createProductNews({ db, product, fetchFn, searchFn = undefined, 
   async function ingestSymbolNews(budget = 12) {
     if (!product.news?.perSymbol || typeof searchFn !== 'function') return 0;
     const symbols = (product.universe.watchlist(cfg) ?? []).slice(0, budget);
+    const baseRel = product.news?.relevance ?? { core: [], context: [] };
     let stored = 0;
     for (const s of symbols) {
       const key = stateKey(`symbolNews:${s.symbol}`);
       const last = db.getState(key) ?? 0;
       if (now() - last < 6 * 3600_000) continue;
+      const short = String(s.symbol).replace(/^(sh|sz|us|hk)/i, '');
+      // A story naming the stock is relevant to that stock even when it never
+      // says "A股": the symbol name joins the core keyword set for this query.
+      const rel = {
+        core: [...(baseRel.core ?? []), s.name, short].filter(Boolean),
+        context: baseRel.context ?? [],
+        negative: baseRel.negative ?? [],
+      };
       let results = [];
       try {
-        results = await searchFn([`${s.name} ${String(s.symbol).replace(/^(sh|sz|us|hk)/i, '')} 新闻 公告 业绩`]);
+        results = await searchFn([`${s.name} ${short} 新闻 公告 业绩`]);
       } catch {
         continue; // one symbol failing must not stop the rest
       }
       try {
-        stored += await ingestSearchResults(fetchFn, db, results, s.symbol, cfgFor, relevance);
+        stored += await ingestSearchResults(fetchFn, db, results, s.symbol, cfgFor, rel);
         db.putState(key, now());
       } catch { /* keep going */ }
     }
