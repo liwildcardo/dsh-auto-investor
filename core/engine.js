@@ -12,7 +12,8 @@ import { jsonSafe } from '../lib/json.js';
 const DEFAULT_SERIES = 240;
 
 export function createProductEngine({
-  db, product, llm, fetchFn, now = () => Date.now(), searchFn = undefined, newsIngest = null, newsList = null,
+  db, product, llm, fetchFn, now = () => Date.now(), searchFn = undefined,
+  newsIngest = null, newsList = null, llmInfo = null,
 }) {
   const pkey = (k) => `product:${product.id}:${k}`;
   const cfg = product;
@@ -347,16 +348,26 @@ export function createProductEngine({
 
   function status() {
     const snap = snapshotOf(account, priceOf);
+    const watchSymbol = cfg.universe.watchlist(cfg)[0]?.symbol ?? product.id;
+    const series = product.market.kind === 'single'
+      ? db.latestTicksByProduct(product.id, 120).map(t => ({ ts: t.ts, price: t.price }))
+      : db.listPoints(product.id, watchSymbol, 120).map(p => ({ ts: p.ts, price: p.price }));
     return jsonSafe({
-      product: { id: cfg.id, name: cfg.name, currency: cfg.currency },
+      product: { id: cfg.id, name: cfg.name, currency: cfg.currency, unit: cfg.rules?.unit ?? 'share', order: cfg.order },
       quote,
       quoteTs,
       paused,
+      tradingNow: isSessionOpen(cfg.rules, now(), cfg.timezone),
       snapshot: snap,
       versions,
       currentVersion: current(),
       trades: db.listTradesByProduct(product.id, 20),
+      news: typeof newsList === 'function' ? newsList(24) : [],
+      reflections: db.getState(pkey('reflections')) ?? [],
+      series,
+      chartSymbol: watchSymbol,
       ingest: lastIngest,
+      llm: typeof llmInfo === 'function' ? llmInfo() : null,
     });
   }
 
@@ -463,6 +474,12 @@ export function createProductEngine({
     return jsonSafe({ reflected: true, stats, critique, applied, versionCreated: false });
   }
 
+  async function ingestNews() {
+    if (typeof newsIngest !== 'function') return null;
+    lastIngest = await newsIngest();
+    return lastIngest;
+  }
+
   return {
     id: cfg.id,
     product: cfg,
@@ -470,6 +487,8 @@ export function createProductEngine({
     runCycle,
     reflectIfDue,
     status,
+    ingestNews,
+    listNews: (limit) => (typeof newsList === 'function' ? newsList(limit) : []),
     get quote() { return quote; },
     get account() { return account; },
     snapshot: () => snapshotOf(account, priceOf),

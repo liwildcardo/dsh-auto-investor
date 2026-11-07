@@ -1,15 +1,19 @@
 /**
  * 自动投资机 (Auto Investor) — Host half.
- * Gold simulated investing under 招行黄金账户 rules, LLM strategy + reflection
- * loop, exposed as agent tools and /api/auto-investor/* JSON routes.
+ * 多产品模拟投资：每个产品独立账户与引擎（黄金/A股/美股/港股），
+ * LLM 决策 + 策略学习循环，暴露为 Agent 工具与 /api/auto-investor/* 路由。
  */
 import { resolveConfig } from './lib/config.js';
 import { openDb } from './lib/db.js';
-import { createService } from './lib/service.js';
 import { registerTools } from './lib/tools.js';
 import { registerRoutes } from './lib/routes.js';
 import { collectStream } from './lib/llm.js';
 import { normalizeWebSearch } from './lib/news.js';
+import { loadProducts } from './core/registry.js';
+import { createProductEngine } from './core/engine.js';
+import { createProductNews } from './core/news-service.js';
+import { createHub } from './core/hub.js';
+import { migrateGoldState } from './core/migrate.js';
 
 export const inject = ['tools', 'llm', 'connection'];
 
@@ -18,6 +22,7 @@ export function apply(ctx, config) {
   const dataDir = config?.dataDir
     ?? `${process.env.DSH_HOME ?? process.env.HOME ?? '.'}/auto-investor-data`;
   const db = openDb(`${dataDir}/auto-investor.db`);
+  migrateGoldState(db);
 
   // LLM adapter: stream from the configured provider/model, join text deltas.
   // Provider/model entries may be strings or objects across adapter versions.
@@ -79,11 +84,25 @@ export function apply(ctx, config) {
     }
     : undefined;
 
-  const service = createService({ db, cfg, fetchFn, llm: llmCall, now: () => Date.now(), searchFn, llmInfo: () => lastLlm });
+  const products = loadProducts({
+    enabled: Array.isArray(config?.products) ? config.products : undefined,
+    overrides: config?.productConfig ?? {},
+  });
+  const now = () => Date.now();
+  const engines = products.map((product) => {
+    const news = createProductNews({ db, product, fetchFn, searchFn, now, cfg });
+    return createProductEngine({
+      db, product, llm: llmCall, fetchFn, now,
+      newsIngest: news.ingest,
+      newsList: news.list,
+      llmInfo: () => lastLlm,
+    });
+  });
+  const hub = createHub({ engines, products });
   const state = { lastRun: null };
 
-  ctx.effect(() => registerTools(ctx, service), 'auto-investor: tools');
-  ctx.effect(() => registerRoutes(ctx, service, state), 'auto-investor: routes');
+  ctx.effect(() => registerTools(ctx, hub), 'auto-investor: tools');
+  ctx.effect(() => registerRoutes(ctx, hub, state), 'auto-investor: routes');
 
   // Portable interval helper owned by the plugin's effect scope.
   const every = (ms, label, fn) => ctx.effect(() => {
@@ -91,40 +110,49 @@ export function apply(ctx, config) {
     return () => clearInterval(id);
   }, label);
 
-  // Initial price tick so the dashboard has data immediately.
-  service.tickPrices().catch(() => {});
+  // Initial price tick so the dashboards have data immediately.
+  for (const e of engines) e.tick().catch(() => {});
 
-  // Price polling.
+  // Price polling (all products, one interval).
   every(cfg.pricePollSec * 1000, 'auto-investor: price poll', () => {
-    if (service.isPaused()) return;
-    service.tickPrices().catch(() => {});
-  });
-
-  // News polling.
-  every(cfg.newsPollMin * 60_000, 'auto-investor: news poll', () => {
-    if (service.isPaused()) return;
-    service.ingestNews(searchFn).catch(() => {});
-  });
-
-  // Strategy cycle + reflection loop (交易-获取盈亏-修正策略).
-  every(cfg.cycleMin * 60_000, 'auto-investor: strategy cycle', async () => {
-    if (service.isPaused()) return;
-    try {
-      await service.runCycle(searchFn);
-      state.lastRun = Date.now();
-      await service.reflectIfDue();
-    } catch { /* keep the loop alive across transient failures */ }
-  });
-
-  // Quarterly demand-deposit gram-yield settlement (每季度末月21日).
-  every(6 * 3600_000, 'auto-investor: yield settlement', () => {
-    const now = new Date();
-    const isSettleDay = [2, 5, 8, 11].includes(now.getMonth()) // Mar/Jun/Sep/Dec
-      && now.getDate() === 21;
-    if (isSettleDay && !service.isPaused()) {
-      service.settleYield(cfg.demandYieldAnnualPct);
+    for (const e of engines) {
+      if (e.paused) continue;
+      e.tick().catch(() => {});
     }
   });
+
+  // News polling (market feeds + per-symbol cache) for every product.
+  every(cfg.newsPollMin * 60_000, 'auto-investor: news poll', () => {
+    for (const e of engines) {
+      if (e.paused) continue;
+      e.ingestNews?.().catch(() => {});
+    }
+  });
+
+  // Strategy cycles, staggered per product so LLM calls do not burst together.
+  const staggerMs = (config?.staggerSec ?? 120) * 1000;
+  ctx.effect(() => {
+    const stops = engines.map((engine, i) => {
+      let interval = null;
+      const start = setTimeout(() => {
+        const run = async () => {
+          if (engine.paused) return;
+          try {
+            await engine.runCycle();
+            state.lastRun = Date.now();
+            await engine.reflectIfDue();
+          } catch { /* keep the loop alive across transient failures */ }
+        };
+        interval = setInterval(run, cfg.cycleMin * 60_000);
+        run();
+      }, i * staggerMs);
+      return () => {
+        clearTimeout(start);
+        if (interval) clearInterval(interval);
+      };
+    });
+    return () => { for (const stop of stops) stop(); };
+  }, 'auto-investor: strategy cycles');
 
   return () => db.close();
 }

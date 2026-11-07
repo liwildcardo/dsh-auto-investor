@@ -1,0 +1,60 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { openDb } from '../lib/db.js';
+import { migrateGoldState } from '../core/migrate.js';
+import { scoreRelevance, relevant } from '../lib/news.js';
+import { createProductEngine } from '../core/engine.js';
+import { createHub } from '../core/hub.js';
+import { loadProducts } from '../core/registry.js';
+
+test('gold-era state migrates into the product:gold namespace once', (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-mig-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  db.putState('portfolio', { cash: 95000, grams: 5, termGrams: 0, costAvg: 875, realizedPnl: 12, investedRmb: 4375 });
+  db.putState('versions', [{ id: 1, createdAt: 1, strategy: { plan: { maxTradesPerDay: 2 } }, startPnl: 0 }]);
+  db.putState('reflections', [{ ts: 1, critique: 'ok' }]);
+  db.putState('paused', false);
+  db.putState('lastReflectAt', 42);
+
+  const r1 = migrateGoldState(db);
+  assert.equal(r1.migrated, true);
+  const acct = db.getState('product:gold:account');
+  assert.equal(acct.cash, 95000);
+  assert.equal(acct.positions.AU9999.qty, 5);
+  assert.equal(acct.positions.AU9999.costAvg, 875);
+  assert.equal(db.getState('product:gold:reflections').length, 1);
+  assert.equal(db.getState('product:gold:lastReflectAt'), 42);
+
+  const r2 = migrateGoldState(db); // idempotent
+  assert.equal(r2.migrated, false);
+});
+
+test('product relevance keeps the product’s own news and drops others', () => {
+  const ashare = { core: ['A股', '上市公司', '业绩'], context: ['成交额', '降准', '政策'] };
+  assert.ok(relevant({ title: 'A股三大指数集体上涨', description: '成交额放大' }, ashare), 'A-share news kept');
+  assert.ok(!relevant({ title: '央行增持黄金0.93吨', description: '金价上涨' }, ashare), 'gold news filtered out');
+  assert.ok(scoreRelevance({ title: '贵州茅台发布业绩预告' }, ashare) >= 2, 'core keyword scored');
+});
+
+test('hub dispatches calls to the right product engine', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-hub-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const products = loadProducts({ enabled: ['gold', 'ashare'] });
+  const engines = products.map(p => createProductEngine({
+    db, product: p, fetchFn: async () => ({ ok: true }),
+    llm: async () => JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 }),
+    now: () => Date.UTC(2026, 10, 2, 2, 0),
+  }));
+  const hub = createHub({ engines, products });
+  assert.deepEqual(hub.products().map(p => p.id), ['gold', 'ashare']);
+  const gold = hub.status('gold');
+  const ashare = hub.status('ashare');
+  assert.equal(gold.product.id, 'gold');
+  assert.equal(ashare.product.id, 'ashare');
+  assert.equal(hub.pause('ashare', true), true);
+  assert.equal(hub.status('ashare').paused, true);
+  assert.equal(hub.status('gold').paused, false);
+});

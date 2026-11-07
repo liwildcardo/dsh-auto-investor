@@ -196,6 +196,184 @@ window.__ModuleLoader__.load({
         }));
     }
 
+    async function fetchProductState(productId) {
+      const res = await fetch(`/api/auto-investor/state?product=${encodeURIComponent(productId)}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`state http ${res.status}`);
+      return res.json();
+    }
+
+    function Sparkline({ series, currency }) {
+      const pts = (series ?? []).filter(p => Number.isFinite(p.price));
+      if (pts.length < 2) return h('div', { className: 'ai-flat' }, '暂无行情数据');
+      const w = 600;
+      const hgt = 140;
+      const pad = 10;
+      const ys = pts.map(p => p.price);
+      const min = Math.min(...ys);
+      const max = Math.max(...ys);
+      const span = max - min || 1;
+      const d = pts.map((p, i) => {
+        const x = pad + (i / (pts.length - 1)) * (w - pad * 2);
+        const y = pad + (1 - (p.price - min) / span) * (hgt - pad * 2);
+        return `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      return h('svg', { viewBox: `0 0 ${w} ${hgt}`, style: { width: '100%', height: 'auto', color: 'var(--dsw-alias-accent-brand, #b08d3f)' } },
+        h('path', { d, fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 }),
+        h('text', { x: pad, y: 14, className: 'ai-src' }, `${currency} ${max.toFixed(2)}`),
+        h('text', { x: pad, y: hgt - 4, className: 'ai-src' }, `${min.toFixed(2)}`));
+    }
+
+    function ProductDashboard({ productId }) {
+      const [state, setState] = React.useState(null);
+      const [error, setError] = React.useState(null);
+      const [notice, setNotice] = React.useState(null);
+      const [busy, setBusy] = React.useState(false);
+
+      React.useEffect(() => {
+        let alive = true;
+        const load = async () => {
+          try {
+            const s = await fetchProductState(productId);
+            if (alive) { setState(s); setError(null); }
+          } catch (e) {
+            if (alive) setError(String(e?.message ?? e));
+          }
+        };
+        load();
+        const timer = setInterval(load, 10_000);
+        return () => { alive = false; clearInterval(timer); };
+      }, [productId]);
+
+      const act = async (kind) => {
+        setBusy(true);
+        setNotice(null);
+        try {
+          const res = await fetch('/api/auto-investor/action', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ kind, product: productId }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok || body.ok === false) throw new Error(body.reason ?? `http ${res.status}`);
+          const r = body.result ?? {};
+          setNotice(kind === 'run'
+            ? `分析完成：${r.decision?.action ?? '-'}${r.rejection ? `（${r.rejection}）` : ''}`
+            : kind === 'reflect' ? `复盘完成${r.versionCreated ? '，已生成新版本' : ''}` : '已切换循环状态');
+          setState(await fetchProductState(productId));
+        } catch (e) {
+          setNotice(String(e?.message ?? e));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      if (error) {
+        return h('div', { className: 'ai-wrap' }, h('style', null, CSS),
+          h('div', { className: 'ai-flat' }, `加载失败：${error}`));
+      }
+      if (!state) {
+        return h('div', { className: 'ai-wrap' }, h('style', null, CSS),
+          h('div', { className: 'ai-flat' }, '加载中…'));
+      }
+
+      const p = state.product ?? {};
+      const snap = state.snapshot ?? { positions: [] };
+      const positions = snap.positions ?? [];
+      const cur = state.currentVersion ?? {};
+      const strat = cur.strategy ?? {};
+      const fmtQty = (v) => (typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : '--');
+
+      const table = (head, rows) => h('table', { className: 'ai-table' },
+        h('thead', null, h('tr', null, head.map(x => h('th', { key: x }, x)))),
+        h('tbody', null, rows));
+
+      const card = (accent, title, right, children) => h('div', { className: `ai-card ai-acc-${accent}` },
+        h(Section, { accent, title, right }),
+        h('div', { className: 'ai-body' }, ...children));
+
+      const positionRows = positions.map(pos => h('tr', { key: pos.symbol },
+        h('td', null, pos.symbol),
+        h('td', null, fmtQty(pos.qty)),
+        h('td', null, fmt(pos.costAvg)),
+        h('td', null, fmt(pos.price)),
+        h('td', { className: pnlClass(pos.pnl) }, fmt(pos.pnl))));
+
+      const metrics = h('div', { className: 'ai-metrics' },
+        h('div', null, '现金 ', h('b', null, fmt(snap.cash))),
+        h('div', null, '持仓市值 ', h('b', null, fmt(snap.positionsValue))),
+        h('div', null, '持仓盈亏 ', h('b', { className: pnlClass(snap.holdingPnl) }, fmt(snap.holdingPnl))),
+        h('div', null, '今日收益 ', h('b', { className: pnlClass(snap.todayPnl) }, fmt(snap.todayPnl))),
+        h('div', null, '累计收益 ', h('b', { className: pnlClass(snap.totalPnl) }, fmt(snap.totalPnl))));
+
+      const signals = (strat.signals ?? []).map(s => h('div', { key: s.id, className: 'ai-strat-cell' },
+        h('span', { className: 'k' }, `${s.id} (权重${s.weight ?? 1})`),
+        h('span', { className: 'ai-strat-text' }, JSON.stringify(s.params ?? {}))));
+
+      const reflections = (state.reflections ?? []).slice(-6).reverse().map((r, i) => h('li', { key: i },
+        h('span', { className: 'ai-src' }, `${new Date(r.ts).toLocaleString('zh-CN')} · ${r.trigger}${r.versionCreated ? ' · 新版本' : ''}`),
+        h('div', { className: 'ai-strat-text' }, String(r.critique ?? '—'))));
+
+      const trades = (state.trades ?? []).slice(0, 10).map((t, i) => h('tr', { key: i },
+        h('td', null, new Date(t.ts).toLocaleString('zh-CN')),
+        h('td', { className: t.side === 'buy' ? 'ai-up' : 'ai-down' }, t.side === 'buy' ? '买入' : '卖出'),
+        h('td', null, t.symbol ?? '—'),
+        h('td', null, fmt(t.price)),
+        h('td', null, fmt(t.rmb))));
+
+      const news = (state.news ?? []).slice(0, 8).map((n, i) => h('li', { key: i },
+        h('a', { href: n.url, target: '_blank', rel: 'noreferrer' }, plain(n.title)),
+        h('span', { className: 'ai-src' }, ` — ${n.source ?? ''}${newsWhen(n) ? ` · ${newsWhen(n)}` : ''}`)));
+
+      return h('div', { className: 'ai-wrap' },
+        h('style', null, CSS),
+        h('h2', { className: 'ai-title' }, `自动投资机 · ${p.name ?? productId}`,
+          h('span', { className: 'ai-src' },
+            ` · ${state.tradingNow ? '交易中' : '休市'}${state.paused ? ' · 已暂停' : ''}${state.llm ? ` · 模型 ${state.llm.provider}/${state.llm.model}` : ''}`)),
+
+        card('brand', '持仓与收益', h('span', { className: 'ai-src' }, snap.currency ?? p.currency ?? ''), [
+          metrics,
+          positions.length === 0
+            ? h('div', { className: 'ai-flat' }, '空仓')
+            : table(['标的', '数量', '成本', '现价', '盈亏'], positionRows),
+        ]),
+
+        card('grey', '行情走势', h('span', { className: 'ai-src' }, state.chartSymbol ?? ''), [
+          h(Sparkline, { series: state.series, currency: p.currency }),
+        ]),
+
+        card('amber', '策略版本', h('span', { className: 'ai-src' }, `v${cur.id ?? '-'} / 共 ${(state.versions ?? []).length} 个`), [
+          h('div', { className: 'ai-strat-grid' }, signals),
+          strat.risk
+            ? h('div', { className: 'ai-note' }, `风控：止损 ${strat.risk.stopLossPct ?? '-'}% · 止盈 ${strat.risk.takeProfitPct ?? '-'}% · 单笔 ${strat.risk.perTrade ?? '-'}`)
+            : null,
+          cur.critique ? h('div', { className: 'ai-note' }, `复盘结论：${cur.critique}`) : null,
+        ]),
+
+        card('red', '复盘记录', h('span', { className: 'ai-src' }, `共 ${(state.reflections ?? []).length} 次`), [
+          (state.reflections ?? []).length === 0 ? h('div', { className: 'ai-flat' }, '暂无复盘') : h('ul', { className: 'ai-news' }, reflections),
+        ]),
+
+        card('grey', '交易记录', h('span', { className: 'ai-src' }, `共 ${(state.trades ?? []).length} 笔`), [
+          (state.trades ?? []).length === 0
+            ? h('div', { className: 'ai-flat' }, '暂无成交')
+            : table(['时间', '方向', '标的', '价格', '金额'], trades),
+        ]),
+
+        card('grey', '最新资讯', h('span', { className: 'ai-src' }, `共 ${(state.news ?? []).length} 条`), [
+          (state.news ?? []).length === 0 ? h('div', { className: 'ai-flat' }, '暂无相关资讯') : h('ul', { className: 'ai-news' }, news),
+        ]),
+
+        card('brand', '操作', null, [
+          h('div', null,
+            h('button', { className: 'ai-btn primary', disabled: busy, onClick: () => act('run') }, '立即分析'),
+            h('button', { className: 'ai-btn', disabled: busy, onClick: () => act('reflect') }, '立即复盘'),
+            h('button', { className: 'ai-btn', disabled: busy, onClick: () => act(state.paused ? 'resume' : 'pause') }, state.paused ? '恢复自动循环' : '暂停自动循环')),
+          notice ? h('div', { className: 'ai-note' }, notice) : null,
+          h('div', { className: 'ai-note' },
+            '下单由策略引擎自动执行，用户无需也不能手动买卖；成交受交易时段、手数、费用、涨跌停、单笔与敞口上限约束。'),
+        ]));
+    }
+
     function Dashboard() {
       const [state, setState] = React.useState(null);
       const [error, setError] = React.useState(null);
@@ -502,13 +680,22 @@ window.__ModuleLoader__.load({
             return zh;
           }
         };
-        ctx.effect(() => ctx.slots.inject('conversation.view', () =>
-          ctx.slots.register({
-            name: 'conversation.view',
-            id: 'auto-investor-dashboard',
-            order: 40,
-            label: () => t('自动投资机', 'Auto investor'),
-          }, Dashboard)), 'auto-investor: dashboard view');
+        // One page per product; the harness renders these as tab entries.
+        const VIEWS = [
+          { id: 'gold', zh: '黄金', en: 'Gold', order: 40 },
+          { id: 'ashare', zh: 'A股', en: 'A-shares', order: 50 },
+          { id: 'us', zh: '美股', en: 'US stocks', order: 60 },
+          { id: 'hk', zh: '港股', en: 'HK stocks', order: 70 },
+        ];
+        for (const view of VIEWS) {
+          ctx.effect(() => ctx.slots.inject('conversation.view', () =>
+            ctx.slots.register({
+              name: 'conversation.view',
+              id: `auto-investor-${view.id}`,
+              order: view.order,
+              label: () => t(`自动投资机·${view.zh}`, `Auto investor · ${view.en}`),
+            }, () => h(ProductDashboard, { productId: view.id }))), `auto-investor: ${view.id} view`);
+        }
         ctx.effect(() => ctx.slots.inject('conversation.composer.dock', () =>
           ctx.slots.register({
             name: 'conversation.composer.dock',
