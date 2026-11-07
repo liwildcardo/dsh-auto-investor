@@ -26,6 +26,25 @@ for (const kind of ['json', 'sqlite']) {
     assert.equal(tail[0].ts, 2000);
   });
 
+  test(`db[${kind}] product dimension isolates ticks, trades and series`, (t) => {
+    const db = freshDb(t, kind);
+    db.insertTick({ ts: 1000, mid: 900, buy: 902, sell: 898 });                    // legacy → gold
+    db.insertTick({ ts: 2000, mid: 10, buy: 10, sell: 10, product: 'ashare' });
+    assert.equal(db.latestTicksByProduct('gold', 10).length, 1);
+    assert.equal(db.latestTicksByProduct('ashare', 10).length, 1);
+    assert.equal(db.latestTicksByProduct('ashare', 10)[0].price, 10);
+    db.insertTrade({ ts: 1, side: 'buy', grams: 0, price: 1, rmb: 100, product: 'ashare', symbol: 'sh600000' });
+    db.insertTrade({ ts: 2, side: 'buy', grams: 1, price: 900, rmb: 900 });
+    assert.equal(db.listTradesByProduct('ashare', 10).length, 1);
+    assert.equal(db.listTradesByProduct('ashare', 10)[0].symbol, 'sh600000');
+    assert.equal(db.listTradesByProduct('gold', 10).length, 1);
+    db.insertPoint({ ts: 5, product: 'ashare', symbol: 'sh600000', price: 10, volume: 100 });
+    db.insertPoint({ ts: 6, product: 'ashare', symbol: 'sh600000', price: 11, volume: 120 });
+    const points = db.listPoints('ashare', 'sh600000', 10);
+    assert.equal(points.length, 2);
+    assert.equal(points.at(-1).price, 11);
+  });
+
   test(`db[${kind}] news dedupe by url hash`, (t) => {
     const db = freshDb(t, kind);
     const item = { url: 'https://example.com/a', title: '央行增持黄金', source: 'test', ts: 1 };
