@@ -33,7 +33,7 @@ function makeProduct(overrides = {}) {
       candidates: { threshold: 0.8 },
       prompt: { role: 't', heuristics: [], constraints: [] },
       decision: { actions: ['buy', 'sell', 'hold'], shape: 'symbol+shares' },
-      evolvable: [],
+      evolvable: [{ path: 'signals.0.params.slow', min: 10, max: 60, step: 5 }],
     },
     rules: {
       unit: 'share', lotSize: 100, settlement: overrides.settlement ?? 'T+1',
@@ -114,6 +114,21 @@ test('closed session rejects the fill', async (t) => {
   const res = await engine.runCycle();
   assert.equal(res.trades.length, 0);
   assert.match(res.rejection ?? '', /交易时段/);
+});
+
+test('reflection applies only whitelisted, clamped parameters and forks a version', async (t) => {
+  const llmOut = JSON.stringify({
+    critique: '趋势参数偏慢，需缩短',
+    params: { 'signals.0.params.slow': 200, 'risk.perTrade': 999999 },
+  });
+  const { engine } = makeEngine(t, { llm: async () => llmOut });
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.reflected, true);
+  assert.equal(r.versionCreated, true);
+  assert.equal(r.applied['signals.0.params.slow'], 60, 'clamped to the whitelist max');
+  assert.equal(r.applied['risk.perTrade'], undefined, 'non-whitelisted path ignored');
+  assert.equal(engine.status().versions.length, 2);
+  assert.equal(engine.status().versions[1].strategy.signals[0].params.slow, 60);
 });
 
 test('stop loss forces a sell on the next cycle (T+0 product)', async (t) => {

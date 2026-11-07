@@ -152,6 +152,20 @@ export function createProductEngine({
     return lines.join('\n');
   }
 
+  function parseReflection(raw) {
+    try {
+      const m = String(raw ?? '').match(/\{[\s\S]*\}/);
+      if (!m) return null;
+      const j = JSON.parse(m[0]);
+      return {
+        critique: String(j.critique ?? ''),
+        params: j.params != null && typeof j.params === 'object' ? j.params : {},
+      };
+    } catch {
+      return null;
+    }
+  }
+
   function parseDecision(raw) {
     try {
       const txt = String(raw ?? '');
@@ -346,11 +360,115 @@ export function createProductEngine({
     });
   }
 
+  /* ------------------------------- reflection ------------------------------ */
+
+  function versionStats() {
+    const snap = snapshotOf(account, priceOf);
+    const start = current().startPnl ?? 0;
+    const trades = db.listTradesByProduct(product.id, 5000)
+      .filter(t => t.ts >= (current().createdAt ?? 0));
+    const closes = trades.filter(t => t.side === 'sell');
+    return {
+      returnPnl: Math.round((snap.totalPnl - start) * 100) / 100,
+      returnPct: Math.round(((snap.totalPnl - start) / (account.initial || 1)) * 10000) / 100,
+      fills: trades.length,
+      closes: closes.length,
+      holdingPnl: Math.round(snap.holdingPnl * 100) / 100,
+      positions: snap.positions.length,
+    };
+  }
+
+  function setPath(obj, path, value) {
+    const parts = String(path).split('.');
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i += 1) {
+      const k = parts[i];
+      if (cur[k] == null || typeof cur[k] !== 'object') return false;
+      cur = cur[k];
+    }
+    const leaf = parts[parts.length - 1];
+    if (!(leaf in cur)) return false;
+    cur[leaf] = value;
+    return true;
+  }
+
+  /** Apply only whitelisted, bounded parameter changes; returns applied patches. */
+  function applyParams(target, params) {
+    const whitelist = cfg.strategy.evolvable ?? [];
+    const applied = {};
+    for (const [path, raw] of Object.entries(params ?? {})) {
+      const spec = whitelist.find(w => w.path === path);
+      if (!spec) continue;
+      let value = Number(raw);
+      if (!Number.isFinite(value)) continue;
+      if (Number.isFinite(spec.min)) value = Math.max(spec.min, value);
+      if (Number.isFinite(spec.max)) value = Math.min(spec.max, value);
+      if (setPath(target, path, value)) applied[path] = value;
+    }
+    return applied;
+  }
+
+  function buildReflectPrompt(stats) {
+    return [
+      `你是${cfg.name}策略复盘引擎。请检讨当前策略版本的表现并给出改进。`,
+      '',
+      '## 当前参数',
+      JSON.stringify(current().strategy, null, 2),
+      '',
+      '## 版本表现',
+      JSON.stringify(stats, null, 2),
+      '',
+      '## 最近决策',
+      JSON.stringify(lastRun?.decision ?? null, null, 2),
+      '',
+      '## 可调整参数（只能改这些路径，且受上下界约束）',
+      ...(cfg.strategy.evolvable ?? []).map(w => `- ${w.path} ∈ [${w.min}, ${w.max}] step ${w.step}`),
+      '',
+      '只输出 JSON：{"critique":"...","params":{"路径":数值}}',
+    ].join('\n');
+  }
+
+  async function reflectIfDue({ force = false } = {}) {
+    const stats = versionStats();
+    const lossTriggered = stats.returnPct <= (cfg.risk?.reflectLossPct ?? -3);
+    const intervalMs = (cfg.reflectIntervalHours ?? 24) * 3600_000;
+    const periodicDue = now() - lastReflectAt >= intervalMs;
+    if (!force && !lossTriggered && !periodicDue) return jsonSafe({ reflected: false, stats });
+    let parsed = null;
+    try {
+      parsed = parseReflection(await llm(buildReflectPrompt(stats)));
+    } catch { /* llm failure keeps the version */ }
+    const critique = String(parsed?.critique ?? '').slice(0, 800) || null;
+    const params = parsed?.params ?? {};
+
+    const next = newVersion(versions.length + 1, cfg, now());
+    next.strategy = JSON.parse(JSON.stringify(current().strategy));
+    const applied = applyParams(next.strategy, params);
+    const changed = Object.keys(applied).length > 0;
+    const journal = db.getState(pkey('reflections')) ?? [];
+    journal.push({
+      ts: now(), trigger: force ? 'manual' : lossTriggered ? 'loss' : 'periodic',
+      stats, critique, applied, versionCreated: changed || lossTriggered,
+    });
+    db.putState(pkey('reflections'), journal.slice(-100));
+    lastReflectAt = now();
+
+    if (changed || lossTriggered) {
+      next.startPnl = snapshotOf(account, priceOf).totalPnl;
+      versions.push(next);
+      persist();
+      return jsonSafe({ reflected: true, stats, critique, applied, version: next, versionCreated: true });
+    }
+    persist();
+    return jsonSafe({ reflected: true, stats, critique, applied, versionCreated: false });
+  }
+
   return {
     id: cfg.id,
     product: cfg,
     tick,
     runCycle,
+    reflectIfDue,
     status,
     get quote() { return quote; },
     get account() { return account; },
