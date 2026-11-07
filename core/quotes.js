@@ -55,3 +55,37 @@ export async function fetchFxRate(fetchFn, from = 'USD', timeoutMs = 8000) {
   if (!Number.isFinite(rate) || rate <= 0) throw new Error('fx rate missing');
   return rate;
 }
+
+/**
+ * Daily close/open/volume history (Tencent kline). Seeds indicators on a fresh
+ * install so trend/momentum/RSI can compute before enough live ticks exist.
+ * Returns [{ts, price, open, high, low, volume}] oldest first.
+ */
+export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs = 10000) {
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(symbol)},day,,,${count},qfq`;
+  const res = await fetchFn(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://gu.qq.com/' },
+  });
+  if (!res.ok) throw new Error(`history http ${res.status}`);
+  const json = await res.json();
+  const node = json?.data?.[symbol] ?? json?.data?.[symbol.toLowerCase()] ?? null;
+  const rows = node?.qfqday ?? node?.day ?? [];
+  const out = [];
+  for (const r of rows) {
+    if (!Array.isArray(r) || r.length < 5) continue;
+    const ts = Date.parse(`${r[0]}T00:00:00+08:00`);
+    const price = Number(r[2]);
+    if (!Number.isFinite(ts) || !Number.isFinite(price) || price <= 0) continue;
+    out.push({
+      ts,
+      price,
+      open: Number(r[1]) || null,
+      high: Number(r[3]) || null,
+      low: Number(r[4]) || null,
+      volume: Number(r[5]) || null,
+    });
+  }
+  return out;
+}
+

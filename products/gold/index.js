@@ -36,6 +36,7 @@ export default {
   news: {
     feeds: DEFAULT_FEEDS,
     queries: ['央行增持黄金', '伦敦金 黄金价格 走势', '美联储 利率 黄金'],
+    relevanceMode: 'gold',
     relevance: {
       core: ['黄金', '金价', '贵金属', '央行购金'],
       context: ['美联储', '利率', '通胀', '地缘', '美元'],

@@ -146,7 +146,7 @@ export function apply(ctx, config) {
         };
         interval = setInterval(run, cfg.cycleMin * 60_000);
         run();
-      }, i * staggerMs);
+      }, 45_000 + i * staggerMs); // wait for ctx activation before the first LLM call
       return () => {
         clearTimeout(start);
         if (interval) clearInterval(interval);

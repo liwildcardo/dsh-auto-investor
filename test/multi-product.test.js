@@ -39,6 +39,38 @@ test('product relevance keeps the product’s own news and drops others', () => 
   assert.ok(scoreRelevance({ title: '贵州茅台发布业绩预告' }, ashare) >= 2, 'core keyword scored');
 });
 
+test('daily history seeds the series so indicators are computable', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-hist-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = loadProducts({ enabled: ['ashare'] })[0];
+  const kline = {
+    data: {
+      sh600519: {
+        qfqday: [
+          ['2026-10-01', '1400', '1450', '1460', '1390', '1000'],
+          ['2026-10-02', '1450', '1470', '1480', '1440', '1200'],
+          ['2026-10-03', '1470', '1460', '1475', '1450', '900'],
+        ],
+      },
+    },
+  };
+  const fetchFn = async (url) => {
+    const u = String(url);
+    if (u.includes('fqkline')) return { ok: true, json: async () => kline };
+    if (u.includes('qt.gtimg.cn')) {
+      return { ok: true, text: async () => 'v_sh600519="1~X~600519~1450~1440~1441~100000~0~0~0~0~0~0~0~0~0~0~0"' };
+    }
+    return { ok: true, json: async () => ({ data: {} }) };
+  };
+  const engine = createProductEngine({
+    db, product, fetchFn, llm: async () => '{}', now: () => Date.UTC(2026, 10, 2, 2, 0),
+  });
+  await engine.tick();
+  const st = engine.status();
+  assert.ok(st.series.length >= 3, `series seeded (${st.series.length})`);
+  assert.ok(st.series.every(p => Number.isFinite(p.price)));
+});
+
 test('hub dispatches calls to the right product engine', async (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-hub-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());

@@ -164,6 +164,16 @@ test('extractText unchanged', () => {
   assert.equal(extractText('<p>你好 <b>世界</b></p>'), '你好 世界');
 });
 
+test('parseHtmlList accepts string patterns (config-friendly feeds)', () => {
+  const html = '<a href="https://finance.eastmoney.com/a/202611053923714056.html">上市公司业绩预告大增</a>';
+  const items = parseHtmlList(html, {
+    linkPattern: 'href="(https://finance\\.eastmoney\\.com/a/\\d+\\.html)"[^>]*>([^<]{8,80})</a>',
+    dateFromUrl: /\/a\/(\d{8})/,
+  });
+  assert.equal(items.length, 1);
+  assert.match(items[0].title, /业绩预告/);
+});
+
 test('decodeEntities resolves named and numeric entities in titles', () => {
   assert.equal(decodeEntities('Gold&#x27;s &apos;rally&apos; &amp; yields'), "Gold's 'rally' & yields");
   assert.equal(extractText('&#x27;金价&#x27; &amp; 走势'), "'金价' & 走势");

@@ -6,7 +6,9 @@ import { ingestFeeds, ingestSearchResults, rankNews, backfillPublishDates } from
 
 export function createProductNews({ db, product, fetchFn, searchFn = undefined, now = () => Date.now(), cfg = {} }) {
   const pid = product.id;
-  const relevance = product.news?.relevance ?? null;
+  // Gold keeps its tuned scorer (macro drivers like 央行/美联储 count); other
+  // products use the generic product-keyword scorer.
+  const relevance = product.news?.relevanceMode === 'gold' ? null : (product.news?.relevance ?? null);
   const maxAgeDays = cfg.newsMaxAgeDays ?? 60;
   const cfgFor = { ...cfg, productId: pid, newsMaxAgeDays: maxAgeDays };
   const stateKey = (k) => `product:${pid}:${k}`;

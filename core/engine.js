@@ -8,6 +8,7 @@ import { evaluateSignals, compositeScore, pickCandidates } from './signals.js';
 import { isSessionOpen, roundLot, tradeFees, earliestSellTs, withinPriceBand } from './market-rules.js';
 import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
+import { fetchDailyHistory } from './quotes.js';
 
 const DEFAULT_SERIES = 240;
 
@@ -60,6 +61,25 @@ export function createProductEngine({
 
   /* ------------------------------ market data ------------------------------ */
 
+  /** Seed daily history once per symbol so indicators work immediately. */
+  async function seedHistory() {
+    if (product.market.kind !== 'multi') return;
+    for (const w of (cfg.universe.watchlist(cfg) ?? []).slice(0, 20)) {
+      const key = pkey(`seeded:${w.symbol}`);
+      if (db.getState(key)) continue;
+      try {
+        const rows = await fetchDailyHistory(fetchFn, w.symbol, 120);
+        for (const r of rows) {
+          db.insertPoint({
+            ts: r.ts, product: cfg.id, symbol: w.symbol,
+            price: r.price, open: r.open, volume: r.volume,
+          });
+        }
+        if (rows.length) db.putState(key, now());
+      } catch { /* leave unseeded; retried on the next tick */ }
+    }
+  }
+
   async function tick() {
     const raw = await product.market.quote(fetchFn, cfg);
     quoteTs = now();
@@ -77,6 +97,7 @@ export function createProductEngine({
       }
       recordDayOpen(Object.fromEntries(raw.quotes.map(q => [q.symbol, q.price])));
     }
+    await seedHistory().catch(() => {});
     return quote;
   }
 
@@ -175,9 +196,10 @@ export function createProductEngine({
       const j = JSON.parse(m[0]);
       if (!j || typeof j !== 'object') return null;
       const action = ['buy', 'sell', 'hold'].includes(j.action) ? j.action : 'hold';
+      const symbol = j.symbol == null || j.symbol === '' ? null : String(j.symbol);
       return {
         action,
-        symbol: j.symbol ?? null,
+        symbol,
         amount: Number.isFinite(j.amount) ? j.amount : null,
         qty: Number.isFinite(j.qty) ? j.qty : null,
         reason: String(j.reason ?? '').slice(0, 500),
@@ -341,7 +363,7 @@ export function createProductEngine({
     if (lastIngest) lastIngest = { ...lastIngest };
     lastRun = { decision, trades, rejection, llmError };
     persist();
-    return jsonSafe({ decision, trades, rejection, llmError, paused, quoteTs });
+    return jsonSafe({ decision, trades, rejection, llmError, paused, quoteTs, ingest: lastIngest });
   }
 
   /* -------------------------------- status --------------------------------- */
