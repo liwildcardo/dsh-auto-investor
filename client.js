@@ -131,6 +131,13 @@ window.__ModuleLoader__.load({
       .ai-strip { display: flex; gap: 14px; align-items: center; padding: 5px 14px;
         color: var(--dsw-alias-label-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
       .ai-strip b { color: var(--dsw-alias-label-primary); font-weight: 600; }
+
+      .ai-tabs { display: flex; gap: 8px; padding: 12px 20px 0; flex-wrap: wrap; }
+      .ai-tab { padding: 6px 14px; border-radius: 999px; cursor: pointer;
+        background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary);
+        border: 1px solid var(--dsw-alias-border-l1); font-size: 13px; }
+      .ai-tab.active { background: var(--dsw-alias-accent-brand, #b08d3f); color: #fff;
+        border-color: transparent; font-weight: 600; }
     `;
 
     function Metric({ label, value, cls }) {
@@ -371,6 +378,55 @@ window.__ModuleLoader__.load({
         ]));
     }
 
+    /** One plugin page: a product switcher on top, the selected dashboard below. */
+    const FALLBACK_PRODUCTS = [
+      { id: 'gold', name: '黄金' },
+      { id: 'ashare', name: 'A股' },
+      { id: 'us', name: '美股' },
+      { id: 'hk', name: '港股' },
+    ];
+
+    function AutoInvestorPage() {
+      const [products, setProducts] = React.useState(FALLBACK_PRODUCTS);
+      const [active, setActive] = React.useState(readActive() ?? 'gold');
+
+      React.useEffect(() => {
+        let alive = true;
+        fetch('/api/auto-investor/products', { cache: 'no-store' })
+          .then(r => (r.ok ? r.json() : null))
+          .then((body) => {
+            if (!alive || !body?.products?.length) return;
+            setProducts(body.products);
+            setActive(prev => (body.products.some(p => p.id === prev) ? prev : body.products[0].id));
+          })
+          .catch(() => { /* keep the static fallback list */ });
+        return () => { alive = false; };
+      }, []);
+
+      const select = (id) => {
+        setActive(id);
+        writeActive(id);
+      };
+
+      return h('div', null,
+        h('style', null, CSS),
+        h('div', { className: 'ai-tabs' },
+          products.map(p => h('button', {
+            key: p.id,
+            className: `ai-tab${p.id === active ? ' active' : ''}`,
+            onClick: () => select(p.id),
+          }, p.name))),
+        h(ProductDashboard, { key: active, productId: active }));
+    }
+
+    function readActive() {
+      try { return globalThis.localStorage?.getItem('auto-investor:product') ?? null; } catch { return null; }
+    }
+
+    function writeActive(id) {
+      try { globalThis.localStorage?.setItem('auto-investor:product', id); } catch { /* non-fatal */ }
+    }
+
     function Strip() {
       const [states, setStates] = React.useState(null);
       React.useEffect(() => {
@@ -415,22 +471,14 @@ window.__ModuleLoader__.load({
             return zh;
           }
         };
-        // One page per product; the harness renders these as tab entries.
-        const VIEWS = [
-          { id: 'gold', zh: '黄金', en: 'Gold', order: 40 },
-          { id: 'ashare', zh: 'A股', en: 'A-shares', order: 50 },
-          { id: 'us', zh: '美股', en: 'US stocks', order: 60 },
-          { id: 'hk', zh: '港股', en: 'HK stocks', order: 70 },
-        ];
-        for (const view of VIEWS) {
-          ctx.effect(() => ctx.slots.inject('conversation.view', () =>
-            ctx.slots.register({
-              name: 'conversation.view',
-              id: `auto-investor-${view.id}`,
-              order: view.order,
-              label: () => t(`自动投资机·${view.zh}`, `Auto investor · ${view.en}`),
-            }, () => h(ProductDashboard, { productId: view.id }))), `auto-investor: ${view.id} view`);
-        }
+        // One plugin page with an in-page product switcher (single tab).
+        ctx.effect(() => ctx.slots.inject('conversation.view', () =>
+          ctx.slots.register({
+            name: 'conversation.view',
+            id: 'auto-investor-dashboard',
+            order: 40,
+            label: () => t('自动投资机', 'Auto investor'),
+          }, AutoInvestorPage)), 'auto-investor: dashboard view');
         ctx.effect(() => ctx.slots.inject('conversation.composer.dock', () =>
           ctx.slots.register({
             name: 'conversation.composer.dock',

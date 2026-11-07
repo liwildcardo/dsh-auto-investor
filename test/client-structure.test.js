@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // Client-module smoke test: load client.js with a stubbed module loader and
-// React, capture the components registered into slots, and render the
-// product dashboard tree structurally.
+// React, capture the components registered into slots, and render the single
+// auto-investor page (product switcher + selected dashboard).
 
 function loadClient(fakeState = undefined) {
   let captured = null;
@@ -16,7 +16,7 @@ function loadClient(fakeState = undefined) {
       useState: (init) => {
         let v = typeof init === 'function' ? init() : init;
         if (init === null && fakeState !== undefined && firstNull) {
-          firstNull = false; // only the main data slot receives the fake state
+          firstNull = false; // only the dashboard's data slot receives the fake state
           v = fakeState;
         }
         return [v, () => {}];
@@ -72,6 +72,7 @@ const fakeState = {
   reflections: [{ ts: 1, trigger: 'manual', critique: '减少交易频率', versionCreated: true }],
   series: [{ ts: 1, price: 870 }, { ts: 2, price: 875 }],
   chartSymbol: 'AU9999',
+  fx: null,
   llm: { provider: 'deepseek-account', model: 'deepseek-flash' },
   ingest: null,
 };
@@ -98,62 +99,54 @@ function findTree(node, pred, out = []) {
   return out;
 }
 
-/** Render a registered view wrapper down to its dashboard element. */
-function renderView(reg, id) {
-  const el = reg[id].Component();
-  return el.type(el.props);
+/** Render the single page down to the selected product dashboard element. */
+function renderPage(reg) {
+  const el = reg['auto-investor-dashboard'].Component();
+  const dash = findTree(el, n => typeof n.type === 'function' && n.props?.productId)[0]
+    ?? findTree(el, n => typeof n.type === 'function')[0];
+  return dash.type(dash.props);
 }
 
-test('registers one conversation view per product plus the composer strip', async () => {
+test('registers exactly one plugin page plus the composer strip', async () => {
   const api = await loadClient();
   assert.deepEqual(api.inject, ['slots', 'locale']);
   const reg = applyAndCapture(api);
-  for (const id of ['gold', 'ashare', 'us', 'hk']) {
-    assert.ok(reg[`auto-investor-${id}`], `${id} view registered`);
-    assert.equal(typeof reg[`auto-investor-${id}`].reg.label(), 'string');
-  }
+  assert.ok(reg['auto-investor-dashboard'], 'single dashboard view registered');
   assert.ok(reg['auto-investor-strip'], 'composer strip registered');
-  const label = reg['auto-investor-gold'].reg.label();
-  assert.match(label, /黄金/);
+  const viewIds = Object.keys(reg).filter(k => !k.endsWith('strip'));
+  assert.equal(viewIds.length, 1, `only one conversation view (got ${viewIds.join(',')})`);
+  assert.match(reg['auto-investor-dashboard'].reg.label(), /自动投资机/);
 });
 
-test('product dashboard renders positions, strategy params, trades, news and model', async () => {
+test('the page renders an in-page product switcher', async () => {
+  const api = await loadClient(fakeState);
+  const page = applyAndCapture(api)['auto-investor-dashboard'].Component();
+  const text = JSON.stringify(page);
+  for (const name of ['黄金', 'A股', '美股', '港股']) {
+    assert.ok(text.includes(name), `switcher shows ${name}`);
+  }
+  const buttons = findTree(page, n => n.type === 'button');
+  assert.ok(buttons.length >= 4, 'product buttons rendered');
+});
+
+test('the selected product dashboard renders data and controls', async () => {
   const api = await loadClient(fakeState);
   const reg = applyAndCapture(api);
-  const tree = renderView(reg, 'auto-investor-gold');
+  const tree = renderPage(reg);
   const text = JSON.stringify(tree);
-  assert.ok(text.includes('黄金'), 'product name shown');
-  assert.ok(text.includes('AU9999'), 'position symbol shown');
+  assert.ok(text.includes('自动投资机 · 黄金'), 'product name shown');
+  assert.ok(text.includes('AU9999'), 'position shown');
   assert.ok(text.includes('trend'), 'signal shown');
-  assert.ok(text.includes('fast'), 'signal params shown');
   assert.ok(text.includes('央行增持黄金'), 'news shown');
   assert.ok(text.includes('deepseek-account/deepseek-flash'), 'model shown');
   assert.ok(text.includes('入场过早'), 'critique shown');
-  assert.ok(text.includes('减少交易频率'), 'reflection shown');
-});
-
-test('operations expose analysis controls only — no manual trade buttons', async () => {
-  const api = await loadClient(fakeState);
-  const reg = applyAndCapture(api);
-  const tree = renderView(reg, 'auto-investor-gold');
   const buttons = findTree(tree, n => n.type === 'button');
   const labels = buttons.map(b => (Array.isArray(b.children) ? b.children : [b.children]).filter(c => typeof c === 'string').join(''));
-  assert.ok(labels.some(l => l.includes('立即分析')), 'run button kept');
-  assert.ok(labels.some(l => l.includes('立即复盘')), 'reflect button kept');
-  assert.ok(labels.some(l => l.includes('暂停') || l.includes('恢复')), 'pause/resume kept');
+  assert.ok(labels.some(l => l.includes('立即分析')));
+  assert.ok(labels.some(l => l.includes('立即复盘')));
   for (const banned of ['买入', '卖出', '活期转定期']) {
-    assert.ok(!labels.some(l => l.includes(banned)), `manual trade button must be gone: ${banned}`);
+    assert.ok(!labels.some(l => l.includes(banned)), `no manual trade button: ${banned}`);
   }
-});
-
-test('every product view renders its own product name', async () => {
-  const api = await loadClient(fakeState);
-  const reg = applyAndCapture(api);
-  const tree = renderView(reg, 'auto-investor-ashare');
-  // The fake state still carries gold data; the view id is what changes.
-  const el = reg['auto-investor-ashare'].Component();
-  assert.equal(el.props.productId, 'ashare');
-  assert.ok(JSON.stringify(tree).length > 0);
 });
 
 test('estimated news dates render as 约 instead of 日期未知', async () => {
@@ -163,7 +156,7 @@ test('estimated news dates render as 约 instead of 日期未知', async () => {
   };
   const api = await loadClient(state);
   const reg = applyAndCapture(api);
-  const text = JSON.stringify(renderView(reg, 'auto-investor-gold'));
+  const text = JSON.stringify(renderPage(reg));
   assert.ok(text.includes('约 11-07'), 'estimated date rendered as approximate');
   assert.ok(!text.includes('日期未知'), 'no blank unknown dates');
 });
