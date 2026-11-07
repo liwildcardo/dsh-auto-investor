@@ -300,7 +300,14 @@ window.__ModuleLoader__.load({
 
           /* ── 操作（只控制分析与循环，不允许手动下单） ── */
           h('div', { className: 'ai-card ai-acc-brand' },
-            h(Section, { accent: 'brand', title: '操作' }),
+            h(Section, {
+              accent: 'brand',
+              title: '操作',
+              right: h('span', { className: 'ai-src' },
+                state.llm
+                  ? `模型：${state.llm.provider}/${state.llm.model}`
+                  : '模型：等待首次调用'),
+            }),
             h('div', { className: 'ai-body' },
               h('button', { className: 'ai-btn primary', disabled: busy, onClick: () => act({ kind: 'run' }) }, '立即分析'),
               h('button', { className: 'ai-btn', disabled: busy, onClick: () => act({ kind: 'reflect' }) }, '立即复盘'),
