@@ -177,6 +177,25 @@ test('per-symbol and total exposure caps are independent', async (t) => {
   assert.match(third.rejection ?? '', /单标的敞口/);
 });
 
+test('migrated versions with empty signals/risk are backfilled from the product', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-migv-'));
+  const db = openDb(join(dir, 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  db.putState('product:test:versions', [{ id: 1, createdAt: 1, strategy: { signals: [], risk: {} }, startPnl: 0 }]);
+  const { product } = makeProduct();
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => JSON.stringify({ critique: 'x', params: { 'risk.stopLossPct': -2 } }),
+    now: () => OPEN,
+  });
+  const st = engine.status();
+  assert.ok(st.currentVersion.strategy.signals.length > 0, 'signals backfilled from the product');
+  assert.ok(Object.keys(st.currentVersion.strategy.risk).length > 0, 'risk backfilled');
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.applied['risk.stopLossPct'], -2, 'whitelisted path applies to the backfilled version');
+  assert.equal(r.versionCreated, true);
+});
+
 test('stop loss forces a sell on the next cycle (T+0 product)', async (t) => {
   let action = { action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 };
   const { engine, state } = makeEngine(t, { llm: async () => JSON.stringify(action), settlement: 'T+0' });

@@ -4,7 +4,14 @@
  */
 export function createHub({ engines, products }) {
   const byId = new Map(engines.map(e => [e.id, e]));
-  const pick = (pid) => byId.get(pid) ?? engines[0];
+  // A typo'd product id must fail loudly instead of silently using another
+  // product's account (agent tools and routes both rely on this).
+  const pick = (pid) => {
+    if (pid == null || pid === '') return engines[0];
+    const e = byId.get(pid);
+    if (!e) throw new Error(`unknown product: ${pid}`);
+    return e;
+  };
   const pids = () => engines.map(e => e.id);
 
   return {

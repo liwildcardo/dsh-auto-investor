@@ -45,6 +45,28 @@ export function createProductEngine({
   };
   const stripFns = (v) => JSON.parse(JSON.stringify(v ?? {}));
 
+  /**
+   * Versions migrated from the single-product era have no rule parameters
+   * (`signals: []`, `risk: {}`). Backfill them from the product contract so the
+   * engine evaluates real signals and reflection has whitelisted paths to edit.
+   */
+  function normalizeVersions() {
+    let changed = false;
+    for (const v of versions) {
+      v.strategy ??= {};
+      if (!Array.isArray(v.strategy.signals) || v.strategy.signals.length === 0) {
+        v.strategy.signals = (cfg.strategy.signals ?? []).map(s => ({ ...s, params: { ...(s.params ?? {}) } }));
+        changed = true;
+      }
+      if (!v.strategy.risk || Object.keys(v.strategy.risk).length === 0) {
+        v.strategy.risk = { ...(cfg.risk ?? {}) };
+        changed = true;
+      }
+    }
+    if (changed) persist();
+  }
+  normalizeVersions();
+
   function newVersion(id, p, ts) {
     return {
       id,
@@ -538,7 +560,10 @@ export function createProductEngine({
     const params = parsed?.params ?? {};
 
     const next = newVersion(versions.length + 1, cfg, now());
-    next.strategy = JSON.parse(JSON.stringify(current().strategy));
+    next.strategy = {
+      signals: JSON.parse(JSON.stringify(current().strategy?.signals ?? cfg.strategy.signals ?? [])),
+      risk: { ...(current().strategy?.risk ?? cfg.risk ?? {}) },
+    };
     const applied = applyParams(next.strategy, params);
     const changed = Object.keys(applied).length > 0;
     const journal = db.getState(pkey('reflections')) ?? [];

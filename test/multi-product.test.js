@@ -138,4 +138,5 @@ test('hub dispatches calls to the right product engine', async (t) => {
   assert.equal(hub.pause('ashare', true), true);
   assert.equal(hub.status('ashare').paused, true);
   assert.equal(hub.status('gold').paused, false);
+  assert.throws(() => hub.status('bogus'), /unknown product/, 'typo must not fall back to another product');
 });
