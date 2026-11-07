@@ -149,6 +149,22 @@ test('the selected product dashboard renders data and controls', async () => {
   }
 });
 
+test('only the latest reflection is rendered', async () => {
+  const state = {
+    ...fakeState,
+    reflections: [
+      { ts: 1, trigger: 'loss', critique: '旧复盘A', versionCreated: false },
+      { ts: 2, trigger: 'manual', critique: '旧复盘B', versionCreated: true },
+      { ts: 3, trigger: 'periodic', critique: '最新复盘C', versionCreated: true },
+    ],
+  };
+  const api = await loadClient(state);
+  const text = JSON.stringify(renderPage(applyAndCapture(api)));
+  assert.ok(text.includes('最新复盘C'), 'latest review shown');
+  assert.ok(!text.includes('旧复盘A'), 'older review hidden');
+  assert.ok(!text.includes('旧复盘B'), 'older review hidden');
+});
+
 test('estimated news dates render as 约 instead of 日期未知', async () => {
   const state = {
     ...fakeState,

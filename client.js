@@ -391,7 +391,8 @@ window.__ModuleLoader__.load({
         h('span', { className: 'k' }, `${s.id} · 权重 ${s.weight ?? 1}`),
         h('span', { className: 'v' }, JSON.stringify(s.params ?? {}))));
 
-      const reflections = (state.reflections ?? []).slice(-6).reverse().map((r, i) => h('li', { key: i },
+      // Only the most recent review is shown; the full journal stays in the API.
+      const reflections = (state.reflections ?? []).slice(-1).map((r, i) => h('li', { key: i },
         h('div', null,
           h('span', { className: 'ai-src' }, new Date(r.ts).toLocaleString('zh-CN')),
           h('span', { className: 'ai-chip' }, r.trigger === 'loss' ? '亏损触发' : r.trigger === 'periodic' ? '定期复盘' : '手动复盘'),
