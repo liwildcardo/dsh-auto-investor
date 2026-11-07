@@ -35,6 +35,7 @@ export default {
 
   news: {
     feeds: [
+      { name: '新浪港股', kind: 'html', url: 'https://finance.sina.com.cn/stock/hkstock/', linkPattern: 'href="(https://finance\\.sina\\.com\\.cn/stock/hkstock/[^"]+\\.shtml)"[^>]*>([^<]{8,80})</a>' },
       { name: '中新网财经', kind: 'rss', url: 'https://www.chinanews.com.cn/rss/finance.xml' },
       { name: 'CNBC财经', kind: 'rss', url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
     ],

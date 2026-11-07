@@ -72,11 +72,12 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
   const node = json?.data?.[symbol] ?? json?.data?.[symbol.toLowerCase()] ?? null;
   const rows = node?.qfqday ?? node?.day ?? [];
   const out = [];
+  const cutoff = Date.now() - 2 * 365 * 86_400_000; // ignore stale/misparsed bars
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 5) continue;
     const ts = Date.parse(`${r[0]}T00:00:00+08:00`);
     const price = Number(r[2]);
-    if (!Number.isFinite(ts) || !Number.isFinite(price) || price <= 0) continue;
+    if (!Number.isFinite(ts) || !Number.isFinite(price) || price <= 0 || ts < cutoff) continue;
     out.push({
       ts,
       price,
@@ -88,4 +89,34 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
   }
   return out;
 }
+
+/**
+ * Intraday minute history (Tencent) — fallback when daily bars are thin or
+ * missing (e.g. US symbols). Returns [{ts, price, volume}] oldest first.
+ */
+export async function fetchMinuteHistory(fetchFn, symbol, timeoutMs = 10000) {
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${encodeURIComponent(symbol)}`;
+  const res = await fetchFn(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://gu.qq.com/' },
+  });
+  if (!res.ok) throw new Error(`minute http ${res.status}`);
+  const json = await res.json();
+  const node = json?.data?.[symbol] ?? null;
+  const rows = node?.data?.data ?? [];
+  const day = String(node?.data?.date ?? '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+  const out = [];
+  for (const row of rows) {
+    const parts = String(row).trim().split(/\s+/);
+    if (parts.length < 2) continue;
+    const hhmm = parts[0];
+    const price = Number(parts[1]);
+    if (!/^\d{4}$/.test(hhmm) || !Number.isFinite(price) || price <= 0) continue;
+    const ts = Date.parse(`${day || '1970-01-01'}T${hhmm.slice(0, 2)}:${hhmm.slice(2)}:00+08:00`);
+    if (!Number.isFinite(ts)) continue;
+    out.push({ ts, price, volume: Number(parts[2]) || null });
+  }
+  return out;
+}
+
 

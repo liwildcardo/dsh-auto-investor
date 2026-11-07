@@ -9,6 +9,7 @@ import { scoreRelevance, relevant } from '../lib/news.js';
 import { createProductEngine } from '../core/engine.js';
 import { createHub } from '../core/hub.js';
 import { loadProducts } from '../core/registry.js';
+import { fetchMinuteHistory } from '../core/quotes.js';
 
 test('gold-era state migrates into the product:gold namespace once', (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-mig-')), 'x.db'), { backend: 'json' });
@@ -69,6 +70,17 @@ test('daily history seeds the series so indicators are computable', async (t) =>
   const st = engine.status();
   assert.ok(st.series.length >= 3, `series seeded (${st.series.length})`);
   assert.ok(st.series.every(p => Number.isFinite(p.price)));
+});
+
+test('minute history parses Tencent rows (fallback when daily bars are thin)', async () => {
+  const fetchFn = async () => ({
+    ok: true,
+    json: async () => ({ data: { hk00700: { data: { date: '20261107', data: ['0930 421.000 1', '0931 420.500 2'] } } } }),
+  });
+  const rows = await fetchMinuteHistory(fetchFn, 'hk00700');
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].price, 420.5);
+  assert.ok(Number.isFinite(rows[0].ts));
 });
 
 test('hub dispatches calls to the right product engine', async (t) => {

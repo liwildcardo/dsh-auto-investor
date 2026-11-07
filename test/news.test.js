@@ -174,6 +174,14 @@ test('parseHtmlList accepts string patterns (config-friendly feeds)', () => {
   assert.match(items[0].title, /业绩预告/);
 });
 
+test('ingestFeeds parses product feeds that declare the spec inline', async () => {
+  const db = { latestNews: () => [], upsertNews: () => true };
+  const feed = { name: 'x', kind: 'html', url: 'https://x/', linkPattern: 'href="(https://x/a/\\d+)"[^>]*>([^<]{8,80})</a>' };
+  const fetchFn = async () => ({ ok: true, text: async () => '<a href="https://x/a/123">上市公司业绩大增公告</a>' });
+  const res = await ingestFeeds(fetchFn, db, { newsMaxAgeDays: 60 }, [feed]);
+  assert.equal(res.fetched, 1, 'inline spec (no spec wrapper) is parsed');
+});
+
 test('decodeEntities resolves named and numeric entities in titles', () => {
   assert.equal(decodeEntities('Gold&#x27;s &apos;rally&apos; &amp; yields'), "Gold's 'rally' & yields");
   assert.equal(extractText('&#x27;金价&#x27; &amp; 走势'), "'金价' & 走势");

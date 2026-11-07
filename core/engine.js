@@ -8,7 +8,7 @@ import { evaluateSignals, compositeScore, pickCandidates } from './signals.js';
 import { isSessionOpen, roundLot, tradeFees, earliestSellTs, withinPriceBand } from './market-rules.js';
 import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
-import { fetchDailyHistory } from './quotes.js';
+import { fetchDailyHistory, fetchMinuteHistory } from './quotes.js';
 
 const DEFAULT_SERIES = 240;
 
@@ -61,22 +61,28 @@ export function createProductEngine({
 
   /* ------------------------------ market data ------------------------------ */
 
-  /** Seed daily history once per symbol so indicators work immediately. */
+  /** Seed history once per symbol so indicators work immediately. */
   async function seedHistory() {
     if (product.market.kind !== 'multi') return;
     for (const w of (cfg.universe.watchlist(cfg) ?? []).slice(0, 20)) {
+      if (seriesFor(w.symbol).length >= 30) continue; // enough bars already
       const key = pkey(`seeded:${w.symbol}`);
-      if (db.getState(key)) continue;
+      const seededAt = db.getState(key) ?? 0;
+      if (now() - seededAt < 30 * 60_000) continue; // retry at most every 30 min
       try {
-        const rows = await fetchDailyHistory(fetchFn, w.symbol, 120);
+        let rows = await fetchDailyHistory(fetchFn, w.symbol, 120).catch(() => []);
+        if (rows.length < 30) {
+          const minutes = await fetchMinuteHistory(fetchFn, w.symbol).catch(() => []);
+          rows = [...rows, ...minutes];
+        }
         for (const r of rows) {
           db.insertPoint({
             ts: r.ts, product: cfg.id, symbol: w.symbol,
-            price: r.price, open: r.open, volume: r.volume,
+            price: r.price, open: r.open ?? null, volume: r.volume ?? null,
           });
         }
         if (rows.length) db.putState(key, now());
-      } catch { /* leave unseeded; retried on the next tick */ }
+      } catch { /* leave unseeded; retried after the throttle */ }
     }
   }
 
