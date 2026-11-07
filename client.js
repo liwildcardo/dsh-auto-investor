@@ -253,8 +253,11 @@ window.__ModuleLoader__.load({
       };
 
       if (error) {
+        const disabled = /unknown product|未启用/.test(error);
         return h('div', { className: 'ai-wrap' }, h('style', null, CSS),
-          h('div', { className: 'ai-flat' }, `加载失败：${error}`));
+          h('div', { className: 'ai-flat' }, disabled
+            ? '该产品未启用（可在插件配置 products 中启用）'
+            : `加载失败：${error}`));
       }
       if (!state) {
         return h('div', { className: 'ai-wrap' }, h('style', null, CSS),
@@ -290,6 +293,14 @@ window.__ModuleLoader__.load({
         h('div', null, '今日收益 ', h('b', { className: pnlClass(snap.todayPnl) }, fmt(snap.todayPnl))),
         h('div', null, '累计收益 ', h('b', { className: pnlClass(snap.totalPnl) }, fmt(snap.totalPnl))));
 
+      // Non-CNY products show the CNY-converted view alongside native amounts.
+      const fxLine = state.fx?.rate
+        ? h('div', { className: 'ai-note' },
+          `折人民币（汇率 ${fmt(state.fx.rate, 4)}）：现金 ≈ ${fmt(snap.cash * state.fx.rate)}`
+          + ` · 持仓市值 ≈ ${fmt(snap.positionsValue * state.fx.rate)}`
+          + ` · 累计收益 ≈ ${fmt(snap.totalPnl * state.fx.rate)}`)
+        : null;
+
       const signals = (strat.signals ?? []).map(s => h('div', { key: s.id, className: 'ai-strat-cell' },
         h('span', { className: 'k' }, `${s.id} (权重${s.weight ?? 1})`),
         h('span', { className: 'ai-strat-text' }, JSON.stringify(s.params ?? {}))));
@@ -317,6 +328,7 @@ window.__ModuleLoader__.load({
 
         card('brand', '持仓与收益', h('span', { className: 'ai-src' }, snap.currency ?? p.currency ?? ''), [
           metrics,
+          fxLine,
           positions.length === 0
             ? h('div', { className: 'ai-flat' }, '空仓')
             : table(['标的', '数量', '成本', '现价', '盈亏'], positionRows),
@@ -360,29 +372,36 @@ window.__ModuleLoader__.load({
     }
 
     function Strip() {
-      const [state, setState] = React.useState(null);
+      const [states, setStates] = React.useState(null);
       React.useEffect(() => {
         let alive = true;
         const load = async () => {
           try {
-            const s = await fetchProductState('gold'); // strip summarises the gold page
-            if (alive) setState(s);
+            const res = await fetch('/api/auto-investor/products', { cache: 'no-store' });
+            if (!res.ok) return;
+            const { products } = await res.json();
+            const list = (products ?? []).slice(0, 4);
+            const loaded = await Promise.all(list.map(async (p) => {
+              try {
+                return await fetchProductState(p.id);
+              } catch {
+                return null;
+              }
+            }));
+            if (alive) setStates(loaded.filter(Boolean));
           } catch { /* strip is decorative */ }
         };
         load();
-        const t = setInterval(load, 15_000);
+        const t = setInterval(load, 20_000);
         return () => { alive = false; clearInterval(t); };
       }, []);
-      const snap = state?.snapshot;
-      if (!state || !snap) return null;
+      if (!states?.length) return null;
       return h('div', { className: 'ai-strip' },
         h('style', null, CSS),
-        h('span', null, `🪙 自动投资机·${state.product?.name ?? ''}`),
-        h('span', null, '现金 ', h('b', null, fmt(snap.cash))),
-        h('span', null, '今日 ',
-          h('b', { className: pnlClass(snap.todayPnl) }, fmt(snap.todayPnl))),
-        h('span', null, '持仓 ',
-          h('b', { className: pnlClass(snap.holdingPnl) }, fmt(snap.holdingPnl))));
+        h('span', null, '🪙 自动投资机'),
+        ...states.map(s => h('span', { key: s.product?.id },
+          `${s.product?.name ?? ''} `,
+          h('b', { className: pnlClass(s.snapshot?.totalPnl) }, fmt(s.snapshot?.totalPnl)))));
     }
 
     return {

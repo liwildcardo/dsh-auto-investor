@@ -8,7 +8,7 @@ import { evaluateSignals, compositeScore, pickCandidates } from './signals.js';
 import { isSessionOpen, roundLot, tradeFees, earliestSellTs, withinPriceBand } from './market-rules.js';
 import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
-import { fetchDailyHistory, fetchMinuteHistory } from './quotes.js';
+import { fetchDailyHistory, fetchMinuteHistory, fetchFxRate } from './quotes.js';
 
 const DEFAULT_SERIES = 240;
 
@@ -28,6 +28,7 @@ export function createProductEngine({
   let lastIngest = null;
   let lastRun = null;
   let lastReflectAt = db.getState(pkey('lastReflectAt')) ?? now();
+  let fxRate = db.getState(pkey('fx')) ?? null; // {rate, ts} for non-CNY products
 
   const current = () => versions[versions.length - 1];
   // Version-evolved risk wins over the product defaults (whitelisted + clamped).
@@ -137,7 +138,32 @@ export function createProductEngine({
       recordDayOpen(Object.fromEntries(raw.quotes.map(q => [q.symbol, q.price])));
     }
     await seedHistory().catch(() => {});
+    await refreshFx().catch(() => {});
+    pruneOldSeries();
     return quote;
+  }
+
+  /** USD/HKD → CNY display rate, refreshed at most every 30 minutes. */
+  async function refreshFx() {
+    const pair = cfg.market?.fx;
+    if (!pair || cfg.currency === 'CNY') return;
+    if (fxRate && now() - (fxRate.ts ?? 0) < 30 * 60_000) return;
+    const base = String(pair).replace(/CNY$/i, '');
+    const rate = await fetchFxRate(fetchFn, base);
+    if (Number.isFinite(rate)) {
+      fxRate = { rate, ts: now() };
+      db.putState(pkey('fx'), fxRate);
+    }
+  }
+
+  function pruneOldSeries() {
+    if (typeof db.pruneSeries !== 'function') return;
+    const last = db.getState(pkey('seriesPrunedAt')) ?? 0;
+    if (now() - last < 6 * 3600_000) return;
+    try {
+      db.pruneSeries(3000);
+      db.putState(pkey('seriesPrunedAt'), now());
+    } catch { /* pruning is best-effort */ }
   }
 
   function sessionDate() {
@@ -193,6 +219,16 @@ export function createProductEngine({
 
   function buildPrompt(ctx) {
     const p = cfg.strategy.prompt ?? {};
+    const symbols = new Set((cfg.universe.watchlist(cfg) ?? []).map(w => w.symbol));
+    const newsLines = (ctx.news ?? []).slice(0, 16);
+    const perSymbol = newsLines.filter(n => symbols.has(n.source ?? ''));
+    const market = newsLines.filter(n => !symbols.has(n.source ?? ''));
+    const symbolBlock = [...symbols].map((s) => {
+      const items = perSymbol.filter(n => n.source === s).slice(0, 3);
+      if (!items.length) return null;
+      const name = (cfg.universe.watchlist(cfg) ?? []).find(w => w.symbol === s)?.name ?? s;
+      return [`### ${name} (${s})`, ...items.map(n => `- ${n.title}`)].join('\n');
+    }).filter(Boolean);
     const lines = [
       p.role ?? `你是${cfg.name}投资策略引擎。`,
       '',
@@ -206,11 +242,15 @@ export function createProductEngine({
       JSON.stringify(ctx.signals, null, 2),
       JSON.stringify(ctx.picked, null, 2),
       '',
-      '## 最新资讯',
-      (ctx.news ?? []).slice(0, 12).map((n, i) => `${i + 1}. ${n.title}`).join('\n') || '（暂无）',
+      '## 市场资讯',
+      market.slice(0, 8).map((n, i) => `${i + 1}. ${n.title}`).join('\n') || '（暂无）',
+      '',
+      '## 个股资讯（按标的）',
+      symbolBlock.join('\n\n') || '（暂无）',
       '',
       `## 规则`,
-      ...(p.constraints ?? []).map(c => `- ${c}`),
+      ...(p.heuristics ?? []).map(h => `- 经验：${h}`),
+      ...(p.constraints ?? []).map(c => `- 约束：${c}`),
       '',
       '只输出 JSON：{"action":"buy|sell|hold","symbol":"...","amount":金额或null,"qty":数量或null,"reason":"...","confidence":0~1,"plan":{...}}',
     ];
@@ -349,7 +389,7 @@ export function createProductEngine({
       const fee = tradeFees(cfg.rules, 'sell', notional).total;
       try {
         const r = applySell(account, { symbol, qty: sellQty, price, fee, ts: now() });
-        db.insertTrade({ ts: now(), side: 'sell', grams: cfg.rules.unit === 'gram' ? sellQty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol });
+        db.insertTrade({ ts: now(), side: 'sell', grams: cfg.rules.unit === 'gram' ? sellQty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol, realized: r.realized });
         return { ok: true, side: 'sell', symbol, qty: sellQty, price, fee, notional, realized: r.realized, reason: decision.reason };
       } catch (e) {
         return { ok: false, reason: String(e?.message ?? e) };
@@ -466,6 +506,7 @@ export function createProductEngine({
       reflections: db.getState(pkey('reflections')) ?? [],
       series,
       chartSymbol: watchSymbol,
+      fx: cfg.currency === 'CNY' ? null : fxRate,
       ingest: lastIngest,
       llm: typeof llmInfo === 'function' ? llmInfo() : null,
     });
@@ -479,11 +520,31 @@ export function createProductEngine({
     const trades = db.listTradesByProduct(product.id, 5000)
       .filter(t => t.ts >= (current().createdAt ?? 0));
     const closes = trades.filter(t => t.side === 'sell');
+    const realized = closes.map(t => Number(t.realized)).filter(Number.isFinite);
+    const wins = realized.filter(r => r > 0).length;
+    // Trailing consecutive losing closes (most recent first).
+    let consecLosses = 0;
+    for (const r of realized) { if (r < 0) consecLosses += 1; else break; }
+    // Max drawdown of the realized P&L curve (approximation: closed trades only).
+    let peak = 0;
+    let equity = 0;
+    let maxDrawdown = 0;
+    for (const r of realized) {
+      equity += r;
+      peak = Math.max(peak, equity);
+      maxDrawdown = Math.min(maxDrawdown, equity - peak);
+    }
     return {
       returnPnl: Math.round((snap.totalPnl - start) * 100) / 100,
       returnPct: Math.round(((snap.totalPnl - start) / (account.initial || 1)) * 10000) / 100,
       fills: trades.length,
       closes: closes.length,
+      wins,
+      winRate: realized.length ? Math.round((wins / realized.length) * 1000) / 1000 : null,
+      realizedPnl: Math.round(realized.reduce((a, b) => a + b, 0) * 100) / 100,
+      consecLosses,
+      maxDrawdownPnl: Math.round(maxDrawdown * 100) / 100,
+      maxDrawdownPct: Math.round((maxDrawdown / (account.initial || 1)) * 10000) / 100,
       holdingPnl: Math.round(snap.holdingPnl * 100) / 100,
       positions: snap.positions.length,
     };
@@ -549,7 +610,10 @@ export function createProductEngine({
 
   async function reflectIfDue({ force = false } = {}) {
     const stats = versionStats();
-    const lossTriggered = stats.returnPct <= (effectiveRisk().reflectLossPct ?? -3);
+    const risk = effectiveRisk();
+    const lossTriggered = stats.returnPct <= (risk.reflectLossPct ?? -3)
+      || (Number.isFinite(risk.reflectConsecLosses) && stats.consecLosses >= risk.reflectConsecLosses)
+      || (Number.isFinite(risk.reflectMaxDrawdownPct) && stats.maxDrawdownPct <= risk.reflectMaxDrawdownPct);
     const intervalMs = (cfg.reflectIntervalHours ?? 24) * 3600_000;
     const periodicDue = now() - lastReflectAt >= intervalMs;
     if (!force && !lossTriggered && !periodicDue) return jsonSafe({ reflected: false, stats });

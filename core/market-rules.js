@@ -67,6 +67,10 @@ export function tradeFees(rules, side, notional) {
  * two trading days out (T+2), skipping weekends/holidays.
  */
 export function earliestSellTs(buyTs, rules, timeZone) {
+  // US/HK settlement (T+1/T+2) governs cash settlement, not whether you may
+  // sell: day trading is allowed there. Only markets with a real sell lock
+  // (A-share T+1) delay the sell side.
+  if (rules.allowSameDaySell) return buyTs;
   const delay = rules.settlement === 'T+2' ? 2 : rules.settlement === 'T+1' ? 1 : 0;
   if (delay === 0) return buyTs;
   const startMin = rules.sessions?.[0]?.[0] ?? 0;

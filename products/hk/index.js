@@ -83,6 +83,7 @@ export default {
     unit: 'share',
     lotSize: 100,
     settlement: 'T+2',
+    allowSameDaySell: true, // 港股允许日内交易，T+2 只影响资金结算
     fees: {
       commissionRate: 0.0025, commissionMin: 100,
       stampDutyRate: 0.001, stampDutyBothSides: true,

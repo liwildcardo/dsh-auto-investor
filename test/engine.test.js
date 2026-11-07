@@ -179,6 +179,50 @@ test('per-symbol and total exposure caps are independent', async (t) => {
   assert.match(third.rejection ?? '', /单标的敞口/);
 });
 
+test('close statistics feed the reflection (win rate, drawdown)', async (t) => {
+  let action = { action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 };
+  let price = 10;
+  const { engine, state } = makeEngine(t, { llm: async () => JSON.stringify(action), settlement: 'T+0' });
+  await engine.runCycle(); // buy at 10
+  state.price = 11;        // +10%
+  action = { action: 'sell', symbol: 'x', confidence: 0.9 };
+  await engine.runCycle(); // sell at 11 → realized gain
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.stats.closes, 1, JSON.stringify(r.stats));
+  assert.equal(r.stats.wins, 1);
+  assert.equal(r.stats.winRate, 1);
+  assert.ok(r.stats.realizedPnl > 0);
+  assert.ok(r.stats.maxDrawdownPnl <= 0);
+});
+
+test('non-CNY products report a CNY conversion rate', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-fx-'));
+  const db = openDb(join(dir, 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = normalizeProduct({
+    id: 'usx', name: 'USX', currency: 'USD', timezone: 'America/New_York',
+    market: {
+      kind: 'multi', fx: 'USDCNY',
+      async quote() {
+        return { ts: Date.now(), currency: 'USD', quotes: [{ symbol: 'usX', price: 10, prevClose: 10, open: 10, volume: 1 }] };
+      },
+    },
+    universe: { watchlist: () => [{ symbol: 'usX', name: 'X', lot: 1 }], lotSize: 1 },
+    news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
+    strategy: { indicators: [], signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, prompt: {}, decision: {}, evolvable: [] },
+    rules: { unit: 'share', lotSize: 1, settlement: 'T+1', allowSameDaySell: true, fees: {}, sessions: [[570, 960]], holidays: [] },
+    risk: { perTrade: 1000, perSymbolPct: 25, minConfidence: 0.5, stopLossPct: -5, takeProfitPct: 10 },
+  });
+  const fetchFn = async (url) => {
+    if (String(url).includes('er-api')) return { ok: true, json: async () => ({ rates: { CNY: 7.2 } }) };
+    return { ok: true, json: async () => ({ data: {} }) };
+  };
+  const engine = createProductEngine({ db, product, fetchFn, llm: async () => '{}', now: () => Date.UTC(2026, 10, 2, 15, 0) });
+  await engine.tick();
+  const st = engine.status();
+  assert.ok(Math.abs(st.fx.rate - 7.2) < 1e-9, 'USD→CNY rate reported for display');
+});
+
 test('migrated versions with empty signals/risk are backfilled from the product', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'ai-migv-'));
   const db = openDb(join(dir, 'x.db'), { backend: 'json' });

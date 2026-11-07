@@ -84,6 +84,16 @@ Agent 会调用插件管理器完成：`install_bundle`（目标为克隆目录�
 | `pricePollSec` / `newsPollMin` / `cycleMin` | `60` / `15` / `30` | 行情、资讯、策略周期（秒/分钟） |
 | `holidays` | `[]` | 额外非交易日 `YYYY-MM-DD`（各产品另有内置节假日表） |
 | `llmProvider` / `llmModel` | 空 | 留空则使用当前默认模型 |
+| `llmDailyMaxCalls` | `300` | 每日 LLM 调用上限，超出后本轮降级为规则信号（不崩溃） |
+| `productConfig` 深合并 | — | 可只覆盖某一项，例如 `{ "ashare": { "risk": { "perTrade": 8000 } } }`，其余默认保留 |
+
+旧单产品配置键（`initialCapitalRmb`、`perTradeLimitRmb`、`totalLimitRmb`、`spreadCnyPerGram`、`holidays`、`minConfidence`、`quoteMaxAgeSec`、`dailyLossLimitPct`、`reflectConsecLosses`、`reflectMaxDrawdownPct`）会自动映射到对应产品的资金/风控/规则上。
+
+## 展示
+
+- **本币 + 折人民币**：美股/港股页面在持仓卡片下追加"折人民币"一行（汇率每 30 分钟刷新）
+- **提示词按标的组织**：市场资讯与个股资讯分区，个股段落按自选池标的归组
+- **组合条**：输入框上方显示各产品累计收益，便于跨产品对比
 
 ## 数据
 

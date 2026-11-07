@@ -9,7 +9,7 @@ import { registerTools } from './lib/tools.js';
 import { registerRoutes } from './lib/routes.js';
 import { collectStream } from './lib/llm.js';
 import { normalizeWebSearch } from './lib/news.js';
-import { loadProducts } from './core/registry.js';
+import { loadProducts, mergeProduct } from './core/registry.js';
 import { createProductEngine } from './core/engine.js';
 import { createProductNews } from './core/news-service.js';
 import { createHub } from './core/hub.js';
@@ -58,7 +58,15 @@ export function apply(ctx, config) {
       model = pickId(models[0], 'id', 'name', 'model', 'modelId');
     }
     if (!model) throw new Error(`no LLM model resolved (provider ${provider}; set config llmProvider/llmModel)`);
-    lastLlm = { provider, model, at: Date.now() }; // shown in status for transparency
+    // Daily call budget: a runaway loop must not burn the whole quota.
+    const dayKey = `llm:calls:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)}`;
+    const used = Number(db.getState(dayKey) ?? 0);
+    const maxCalls = config?.llmDailyMaxCalls ?? cfg.llmDailyMaxCalls ?? 300;
+    if (maxCalls > 0 && used >= maxCalls) {
+      throw new Error(`LLM 每日调用上限已达 (${maxCalls})，本轮降级为规则信号`);
+    }
+    try { db.putState(dayKey, used + 1); } catch { /* best effort */ }
+    lastLlm = { provider, model, at: Date.now(), callsToday: used + 1 }; // shown in status for transparency
     try { db.putState('llm:last', lastLlm); } catch { /* best effort */ }
     return collectStream(ctx.llm.stream({
       provider,
@@ -87,8 +95,32 @@ export function apply(ctx, config) {
 
   const products = loadProducts({
     enabled: Array.isArray(config?.products) ? config.products : undefined,
-    overrides: config?.productConfig ?? {},
+    overrides: buildOverrides(),
   });
+
+  /** Map the documented plugin config onto product overrides (gold inherits the
+   *  legacy keys; every product inherits the safety knobs). */
+  function buildOverrides() {
+    const base = config?.productConfig ?? {};
+    const sharedRisk = {
+      minConfidence: cfg.minConfidence,
+      quoteMaxAgeSec: cfg.quoteMaxAgeSec,
+      dailyLossPct: cfg.dailyLossLimitPct,
+      reflectConsecLosses: cfg.reflectConsecLosses,
+      reflectMaxDrawdownPct: cfg.reflectMaxDrawdownPct,
+    };
+    const gold = mergeProduct({
+      capital: { initialRmb: cfg.initialCapitalRmb, maxExposureRmb: cfg.totalLimitRmb },
+      risk: { perTrade: cfg.perTradeLimitRmb, ...sharedRisk },
+      rules: { holidays: cfg.holidays ?? [] },
+      market: { spreadCnyPerGram: cfg.spreadCnyPerGram, gramsPerOunce: cfg.gramsPerOunce },
+    }, base.gold ?? {});
+    const out = { ...base, gold };
+    for (const id of ['ashare', 'us', 'hk']) {
+      out[id] = mergeProduct({ risk: sharedRisk }, base[id] ?? {});
+    }
+    return out;
+  }
   const now = () => Date.now();
   const engines = products.map((product) => {
     const news = createProductNews({ db, product, fetchFn, searchFn, now, cfg });

@@ -58,9 +58,17 @@ test('结算：A股T+1跳过周末、港股T+2、黄金T+0', () => {
   const aDay = zonedParts(aSell, P.ashare.timezone);
   assert.equal(aDay.date, '2026-11-09'); // 周五买入 → 下周一可卖
   assert.equal(aDay.minutes, 570, 'unlocks at the next session open (09:30), not buy time + 24h');
-  const hkSell = earliestSellTs(friday, P.hk.rules, P.hk.timezone);
-  assert.equal(zonedParts(hkSell, P.hk.timezone).date, '2026-11-10');
+  // 美股/港股允许日内交易：结算日不影响卖出
+  assert.equal(earliestSellTs(friday, P.us.rules, P.us.timezone), friday);
+  assert.equal(earliestSellTs(friday, P.hk.rules, P.hk.timezone), friday);
   assert.equal(earliestSellTs(friday, P.gold.rules, P.gold.timezone), friday);
+});
+
+test('T+2 结算市场在关闭日内交易时仍在第二个交易日解锁', () => {
+  const rules = { ...P.hk.rules, allowSameDaySell: false };
+  const monday = TS(2026, 11, 9, 2, 0);
+  const unlock = earliestSellTs(monday, rules, P.hk.timezone);
+  assert.equal(zonedParts(unlock, P.hk.timezone).date, '2026-11-11');
 });
 
 test('涨跌停：A股±10%限制、美股无限制', () => {

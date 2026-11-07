@@ -81,6 +81,7 @@ export default {
     unit: 'share',
     lotSize: 1,
     settlement: 'T+1',
+    allowSameDaySell: true, // 美股允许日内交易，T+1 只影响资金结算
     fees: { commissionRate: 0, commissionMin: 0 },
     priceLimit: null,
     sessions: [[570, 960]],
