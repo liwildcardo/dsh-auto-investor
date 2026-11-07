@@ -36,7 +36,6 @@ export default {
   news: {
     feeds: [
       { name: 'CNBC财经', kind: 'rss', url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
-      { name: 'Kitco黄金', kind: 'html', url: 'https://www.kitco.com/news/', linkPattern: 'href="(https://www\\.kitco\\.com/news/article/(\\d{4}-\\d{2}-\\d{2})/[^"]+)"[^>]*>([^<]{8,120})</a>' },
     ],
     queries: ['US stock market today', 'Federal Reserve rate decision stocks', '美股 财报 科技股'],
     relevance: {

@@ -37,6 +37,13 @@ export function apply(ctx, config) {
   // Resolved provider/model of the last call — persisted so the dashboard can
   // show the engine's model even before the first call after a restart.
   let lastLlm = db.getState('llm:last') ?? null;
+  /** Resolved provider/model + today's call count, read live from storage. */
+  function llmInfo() {
+    const dayKey = `llm:calls:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)}`;
+    const callsToday = Number(db.getState(dayKey) ?? 0);
+    if (!lastLlm) return callsToday > 0 ? { provider: null, model: null, at: null, callsToday } : null;
+    return { ...lastLlm, callsToday };
+  }
   async function llmCall(prompt) {
     // Model resolution: explicit config -> user's current default model
     // (agentDefaultModel) -> first provider with an advertised model.
@@ -58,7 +65,6 @@ export function apply(ctx, config) {
       model = pickId(models[0], 'id', 'name', 'model', 'modelId');
     }
     if (!model) throw new Error(`no LLM model resolved (provider ${provider}; set config llmProvider/llmModel)`);
-    // Daily call budget: a runaway loop must not burn the whole quota.
     const dayKey = `llm:calls:${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)}`;
     const used = Number(db.getState(dayKey) ?? 0);
     const maxCalls = config?.llmDailyMaxCalls ?? cfg.llmDailyMaxCalls ?? 300;
@@ -128,7 +134,7 @@ export function apply(ctx, config) {
       db, product, llm: llmCall, fetchFn, now,
       newsIngest: news.ingest,
       newsList: news.list,
-      llmInfo: () => lastLlm,
+      llmInfo,
     });
   });
   const hub = createHub({ engines, products });
