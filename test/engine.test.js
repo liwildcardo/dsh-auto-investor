@@ -38,6 +38,7 @@ function makeProduct(overrides = {}) {
       indicators: [],
       signals: [{ id: 'trend', params: { fast: 5, slow: 20 }, weight: 1 }],
       candidates: { threshold: 0.8 },
+      plan: { maxTradesPerDay: 3, minIntervalHours: 0, maxPositionPct: 40 },
       prompt: { role: 't', heuristics: [], constraints: [] },
       decision: { actions: ['buy', 'sell', 'hold'], shape: 'symbol+shares' },
       evolvable: [
@@ -139,6 +140,7 @@ test('reflection applies only whitelisted, clamped parameters and forks a versio
   assert.equal(r.applied['risk.perTrade'], undefined, 'non-whitelisted path ignored');
   assert.equal(engine.status().versions.length, 2);
   assert.equal(engine.status().versions[1].strategy.signals[0].params.slow, 60);
+  assert.equal(engine.status().versions[1].strategy.plan?.maxTradesPerDay, 3, 'untouched plan survives the fork');
 });
 
 test('explicit qty is floored to the product lot size', async (t) => {

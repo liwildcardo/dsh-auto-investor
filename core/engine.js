@@ -74,6 +74,7 @@ export function createProductEngine({
       strategy: {
         signals: (p.strategy?.signals ?? []).map(s => ({ ...s, params: { ...(s.params ?? {}) } })),
         risk: { ...(p.risk ?? {}) },
+        plan: { ...(p.strategy?.plan ?? {}) },
       },
       critique: null,
       startPnl: 0,
@@ -560,10 +561,15 @@ export function createProductEngine({
     const params = parsed?.params ?? {};
 
     const next = newVersion(versions.length + 1, cfg, now());
-    next.strategy = {
-      signals: JSON.parse(JSON.stringify(current().strategy?.signals ?? cfg.strategy.signals ?? [])),
-      risk: { ...(current().strategy?.risk ?? cfg.risk ?? {}) },
-    };
+    // Keep every untouched field of the current strategy (e.g. plan) and only
+    // patch the whitelisted parameters on top.
+    next.strategy = JSON.parse(JSON.stringify(current().strategy ?? {}));
+    if (!Array.isArray(next.strategy.signals) || next.strategy.signals.length === 0) {
+      next.strategy.signals = (cfg.strategy.signals ?? []).map(s => ({ ...s, params: { ...(s.params ?? {}) } }));
+    }
+    if (!next.strategy.risk || Object.keys(next.strategy.risk).length === 0) {
+      next.strategy.risk = { ...(cfg.risk ?? {}) };
+    }
     const applied = applyParams(next.strategy, params);
     const changed = Object.keys(applied).length > 0;
     const journal = db.getState(pkey('reflections')) ?? [];

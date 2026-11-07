@@ -9,6 +9,7 @@ import { scoreRelevance, relevant } from '../lib/news.js';
 import { createProductEngine } from '../core/engine.js';
 import { createHub } from '../core/hub.js';
 import { registerRoutes } from '../lib/routes.js';
+import { registerTools } from '../lib/tools.js';
 import { loadProducts } from '../core/registry.js';
 import { fetchMinuteHistory } from '../core/quotes.js';
 
@@ -118,6 +119,22 @@ test('hub routes reject an unknown product instead of falling back to gold', asy
   assert.equal(res.status, 400);
   const ok = await stateRoute.fetch({ url: 'http://local/api/auto-investor/state?product=ashare' });
   assert.equal(ok.status, 200);
+});
+
+test('agent tools return a structured error for an unknown product', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-tools-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const products = loadProducts({ enabled: ['gold'] });
+  const engines = products.map(p => createProductEngine({
+    db, product: p, fetchFn: async () => ({ ok: true }),
+    llm: async () => '{}', now: () => Date.UTC(2026, 10, 2, 2, 0),
+  }));
+  const hub = createHub({ engines, products });
+  const defs = {};
+  registerTools({ tools: { register: (d) => { defs[d.name] = d; return () => {}; } } }, hub);
+  const out = await defs.auto_investor_news.execute({ product: 'bogus', limit: 1 });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /unknown product/);
 });
 
 test('hub dispatches calls to the right product engine', async (t) => {
