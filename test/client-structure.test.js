@@ -249,6 +249,12 @@ test('stock product renders watchlist editor, chart switcher and name columns', 
   assert.ok(text.includes('恢复默认池'), 'reset action');
   const inputs = findTree(tree, n => n.type === 'input');
   assert.ok(inputs.length >= 1, 'search input rendered');
+  // Alignment contract: the search-row button shares the input's 34px box and
+  // drops the generic button margin (a bottom margin skewed it in the flex row).
+  const styleNode = findTree(tree, n => n.type === 'style')[0];
+  const styleText = (styleNode?.children ?? []).join('');
+  assert.ok(styleText.includes('.ai-wl-search .ai-btn { margin: 0; height: 34px'), 'search-row button aligned to input');
+  assert.ok(styleText.includes('.ai-input { flex: 1; min-width: 180px; height: 34px'), 'input fixed height');
 
   // Chart switcher pills.
   const buttons = findTree(tree, n => n.type === 'button');

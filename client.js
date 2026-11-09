@@ -169,11 +169,15 @@ window.__ModuleLoader__.load({
         border: 1px solid var(--dsw-alias-border-l1); }
       .ai-strip b { color: var(--dsw-alias-label-primary); font-weight: 600; }
 
-      .ai-input { flex: 1; min-width: 180px; padding: 8px 12px; border-radius: 10px;
+      .ai-input { flex: 1; min-width: 180px; height: 34px; padding: 0 12px;
+        box-sizing: border-box; border-radius: 10px;
         border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2);
         color: var(--dsw-alias-label-primary); font-size: 12.5px; outline: none; }
       .ai-input:focus { border-color: var(--dsw-alias-brand-primary); }
       .ai-wl-search { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+      /* Same 34px box as the input, no stray margins: they must sit on one line. */
+      .ai-wl-search .ai-btn { margin: 0; height: 34px; padding: 0 18px;
+        box-sizing: border-box; white-space: nowrap; }
       .ai-wl-results { list-style: none; margin: 0 0 10px; padding: 0;
         border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px;
         background: var(--dsw-alias-bg-layer-2); max-height: 210px; overflow: auto; }
