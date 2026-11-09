@@ -677,8 +677,11 @@ export function createProductEngine({
     if (newsIngest) {
       try { lastIngest = await newsIngest(); } catch { /* news is best-effort */ }
     }
-    // Macro factors: staleness-gated network refresh; failures keep the cache.
-    try { factors = await collectFactors(fetchFn, db, now); } catch { /* keep cached */ }
+    // Macro factors refresh in the BACKGROUND: a slow/unreachable FRED must
+    // never delay a decision cycle (signals simply abstain until data lands).
+    collectFactors(fetchFn, db, now)
+      .then((f) => { factors = f; })
+      .catch(() => { /* keep the previous snapshot */ });
     const news = (newsList?.() ?? []);
 
     const risk = riskCheck();
@@ -715,12 +718,15 @@ export function createProductEngine({
           })).filter(x => Number.isFinite(x.pe))
           : [],
       };
+      let raw = null;
       try {
-        const raw = await llm(buildPrompt(ctx));
+        raw = await llm(buildPrompt(ctx));
         decision = parseDecision(raw);
       } catch (e) {
         llmError = String(e?.message ?? e).slice(0, 300);
       }
+      // Surface silent parse failures (previously looked like a clean hold).
+      if (!decision && raw != null && !llmError) llmError = 'LLM 输出无法解析，已回退 hold';
       if (!decision) decision = { action: 'hold', reason: 'fallback hold', confidence: 0 };
       if (decision.action !== 'hold' && (decision.confidence ?? 0) < (effectiveRisk().minConfidence ?? 0.55)) {
         decision = { action: 'hold', reason: `置信度不足(${decision.confidence})`, confidence: decision.confidence };

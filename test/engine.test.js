@@ -210,6 +210,33 @@ test('per-symbol and total exposure caps are independent', async (t) => {
   assert.match(third.rejection ?? '', /单标的敞口/);
 });
 
+test('a hanging factor endpoint never blocks a decision cycle', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-fhang-'));
+  const db = openDb(join(dir, 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const { product } = makeProduct();
+  seedTrend(db, { product: product.id, symbol: 'x' });
+  const fetchFn = async (url) => {
+    if (String(url).includes('fredgraph')) return new Promise(() => {}); // hangs forever
+    if (String(url).includes('er-api')) return { ok: true, json: async () => ({ rates: { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 } }) };
+    return { ok: true, text: async () => '', json: async () => ({}) };
+  };
+  const engine = createProductEngine({
+    db, product, fetchFn,
+    llm: async () => JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 }),
+    now: () => OPEN,
+  });
+  const res = await engine.runCycle(); // must resolve despite the hanging fetch
+  assert.ok(res.decision, `cycle completed: ${JSON.stringify(res)}`);
+});
+
+test('unparseable LLM output is surfaced as llmError, not a silent hold', async (t) => {
+  const { engine } = makeEngine(t, { llm: async () => 'this is not json at all' });
+  const res = await engine.runCycle();
+  assert.equal(res.decision.action, 'hold');
+  assert.match(res.llmError ?? '', /无法解析/);
+});
+
 test('single product keys day-open by the position symbol (today pnl non-zero)', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'ai-dok-'));
   const db = openDb(join(dir, 'x.db'), { backend: 'json' });

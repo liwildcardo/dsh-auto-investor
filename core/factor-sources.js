@@ -80,7 +80,7 @@ async function getFredSeries(fetchFn, db, id, now) {
   if (cached && now() - (cached.fetchedAt ?? 0) < FRED_MAX_AGE) return cached;
   try {
     const res = await fetchFn(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}`, {
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000), // host-process fetch can be slower; never blocks (background)
       headers: { 'user-agent': 'Mozilla/5.0' },
     });
     if (!res.ok) throw new Error(`fred http ${res.status}`);
