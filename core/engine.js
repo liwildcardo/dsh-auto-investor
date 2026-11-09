@@ -67,6 +67,13 @@ export function createProductEngine({
         v.strategy.risk = { ...(cfg.risk ?? {}) };
         changed = true;
       }
+      // Versions forked before plan-preservation lost the frequency plan; the
+      // engine would then fall back to the loosest limits — restore the
+      // product's default plan so daily-trade/interval discipline survives.
+      if (!v.strategy.plan || Object.keys(v.strategy.plan).length === 0) {
+        v.strategy.plan = { ...(cfg.strategy?.plan ?? {}) };
+        changed = true;
+      }
     }
     if (changed) persist();
   }
@@ -399,12 +406,16 @@ export function createProductEngine({
     const prevClose = prevCloseOf(symbol);
     if (!withinPriceBand(cfg.rules, prevClose, price, symbol)) return { ok: false, reason: '超出涨跌停价格区间' };
 
-    // Frequency discipline.
+    // Frequency discipline: version plan (or the product default when a fork
+    // lost it) bounded by hard caps — a missing/permissive plan can never
+    // loosen the ceiling or zero the interval.
     const dayTrades = tradesToday();
-    const plan = current().strategy?.plan ?? {};
-    const maxPerDay = Math.min(plan.maxTradesPerDay ?? 3, risk.maxTradesPerDay ?? 3);
+    const plan = { ...(cfg.strategy?.plan ?? {}), ...(current().strategy?.plan ?? {}) };
+    const hardMax = cfg.rules?.hardMaxTradesPerDay ?? risk.maxTradesPerDay ?? 3;
+    const hardGapH = cfg.rules?.hardMinIntervalHours ?? 0;
+    const maxPerDay = Math.min(plan.maxTradesPerDay ?? hardMax, hardMax);
     if (dayTrades.length >= maxPerDay) return { ok: false, reason: `已达每日交易上限(${maxPerDay})` };
-    const minGap = (plan.minIntervalHours ?? 0) * 3600_000;
+    const minGap = Math.max(plan.minIntervalHours ?? 0, hardGapH) * 3600_000;
     const lastTrade = dayTrades[0];
     if (lastTrade && now() - lastTrade.ts < minGap) return { ok: false, reason: '未达最小交易间隔' };
 

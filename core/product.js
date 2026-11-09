@@ -16,6 +16,9 @@ const DEFAULTS = {
     prompt: {},
     decision: { actions: ['buy', 'sell', 'hold'], shape: 'symbol+shares' },
     evolvable: [],
+    // Default frequency plan: the engine falls back to this whenever a version
+    // has no plan (forks before plan-preservation existed, migrations).
+    plan: { style: 'swing', maxTradesPerDay: 2, minIntervalHours: 4, maxPositionPct: 60 },
   },
   rules: {
     unit: 'share',
@@ -26,6 +29,10 @@ const DEFAULTS = {
     sessions: [[0, 1440]],
     holidays: [],
     boardLimitPct: null,
+    // Hard frequency caps: bound ANY version plan (max = min(plan, hard),
+    // gap = max(plan, hardMin)) so a lost/permissive plan can never loosen them.
+    hardMaxTradesPerDay: 3,
+    hardMinIntervalHours: 2,
   },
   risk: {
     perTrade: 5000, // native currency amount
