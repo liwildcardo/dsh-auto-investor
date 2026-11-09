@@ -48,9 +48,12 @@ export default {
   strategy: {
     barInterval: '1h', // Tencent has no US daily history; session-hour bars from live ticks
     signals: [
-      { id: 'trend', params: { fast: 10, slow: 50 }, weight: 1.2 },
-      { id: 'momentum', params: { period: 20, threshold: 0.04 }, weight: 1 },
-      { id: 'rsi', params: { period: 14 }, weight: 0.6 },
+      // Session-hour bars accumulate ~6.5/day: lookbacks must fit ~13 bars
+      // available in the first days (health reflection shrinks them further
+      // if data lags), not the 50-bar originals sized for daily data.
+      { id: 'trend', params: { fast: 5, slow: 10 }, weight: 1.2 },
+      { id: 'momentum', params: { period: 8, threshold: 0.02 }, weight: 1 },
+      { id: 'rsi', params: { period: 9 }, weight: 0.6 },
       { id: 'valuation', params: { low: 0.3, high: 0.8 }, weight: 0.6 },
     ],
     prompt: {
@@ -64,8 +67,10 @@ export default {
     },
     decision: { actions: ['buy', 'sell', 'hold'], shape: 'symbol+shares' },
     evolvable: [
-      { path: 'signals.trend.params.slow', min: 20, max: 200, step: 10 },
-      { path: 'signals.trend.params.fast', min: 5, max: 50, step: 5 },
+      { path: 'signals.trend.params.slow', min: 5, max: 60, step: 1 },
+      { path: 'signals.trend.params.fast', min: 2, max: 30, step: 1 },
+      { path: 'signals.momentum.params.period', min: 5, max: 20, step: 1 },
+      { path: 'signals.rsi.params.period', min: 5, max: 20, step: 1 },
       { path: 'signals.momentum.params.threshold', min: 0.01, max: 0.15, step: 0.01 },
       { path: 'risk.stopLossPct', min: -15, max: -2, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 3, max: 40, step: 1 },

@@ -225,6 +225,28 @@ test('最新资讯 card lists news newest-first (dated before estimated)', async
   assert.ok(iOld < iEst, `estimated-ts item last (est=${iEst})`);
 });
 
+test('运行健康 line renders candidate rate, rejections and bars', async () => {
+  const state = {
+    ...fakeState,
+    health: {
+      cycles: 50,
+      candidateRate: 0,
+      rejections: { '标的不在候选或持仓中': 42, '非交易时段': 8 },
+      signalCoverage: 0.45,
+      bars: [{ symbol: 'usGOOGL', bars: 13 }],
+      barsRequired: 52,
+      llmErrorRate: 0,
+    },
+  };
+  const api = await loadClient(state);
+  const text = JSON.stringify(renderPage(applyAndCapture(api)));
+  assert.ok(text.includes('运行健康'), 'health line rendered');
+  assert.ok(text.includes('候选率 0%'), 'candidate rate shown');
+  assert.ok(text.includes('标的不在候选或持仓中×42'), 'rejection breakdown shown');
+  assert.ok(text.includes('信号覆盖 45%'), 'coverage shown');
+  assert.ok(text.includes('bars 13/52'), 'bars vs requirement shown');
+});
+
 test('only the latest reflection is rendered', async () => {
   const state = {
     ...fakeState,

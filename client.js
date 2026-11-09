@@ -508,6 +508,20 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'ai-note' }, `宏观因子：${parts.join(' · ')}`);
       })();
 
+      //运行健康（批次 F）：为什么没有交易——候选率/拦截分布/信号覆盖/bars。
+      const health = state.health;
+      const healthNote = health && health.cycles
+        ? h('div', { className: 'ai-note' },
+          `运行健康（近${health.cycles}轮）：候选率 ${Math.round((health.candidateRate ?? 0) * 100)}%`
+          + (Object.keys(health.rejections ?? {}).length
+            ? ` · 拦截 ${Object.entries(health.rejections).map(([k, v]) => `${k}×${v}`).join('、')}`
+            : ' · 无拦截')
+          + (health.signalCoverage != null ? ` · 信号覆盖 ${Math.round(health.signalCoverage * 100)}%` : '')
+          + (health.bars?.length && health.barsRequired
+            ? ` · bars ${Math.min(...health.bars.map(b => b.bars))}/${health.barsRequired}`
+            : ''))
+        : null;
+
       const watchlist = state.watchlist ?? [];
       const nameOf = new Map(watchlist.map(w => [w.symbol, w.name]));
       const isMulti = p.kind === 'multi';
@@ -610,6 +624,7 @@ window.__ModuleLoader__.load({
         fxNote,
         benchNote,
         factorNote,
+        healthNote,
         watchlistCard,
 
         h('div', { className: 'ai-grid' },

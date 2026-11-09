@@ -802,6 +802,7 @@ export function createProductEngine({
       chartSymbol: watchSymbol,
       benchmark: benchmarkView(),
       factors: readFactors(db), // fresh from the shared cache (all products see it)
+      health: healthStats(),
       watchlist: pool(),
       fx: cfg.currency === 'CNY' ? null : fxRate,
       ingest: lastIngest,
@@ -846,6 +847,110 @@ export function createProductEngine({
       positions: snap.positions.length,
       benchmarkReturnPct: benchmarkView()?.returnPct ?? null,
     };
+  }
+
+  /**
+   * 运行健康指标（批次 F）：绩效 stats只回答“赚没赚”，这里回答“为什么没动”——
+   * 候选率、各闸门拦截分布、信号数据覆盖率、bar 数 vs 指标所需、LLM 错误率。
+   * 数据全部来自已有的决策日志，零额外成本。
+   */
+  function healthStats(windowSize = 50) {
+    const journal = db.getState(pkey('decisions')) ?? [];
+    const recent = journal.slice(-windowSize);
+    const bars = pool().map(w => ({ symbol: w.symbol, bars: barsFor(w.symbol).length }));
+    // The tightest lookback any active signal needs (slow/period + warmup).
+    const barsRequired = activeSignals().reduce((m, s) => {
+      const p = s.params ?? {};
+      return Math.max(m, (p.slow ?? 0) + 2, (p.period ?? 0) + 2);
+    }, 0);
+    const n = recent.length;
+    if (!n) return { cycles: 0, bars, barsRequired };
+    const withCandidates = recent.filter(d => (d.picked ?? []).length > 0).length;
+    const rejections = {};
+    for (const d of recent) {
+      if (d.rejection) rejections[d.rejection] = (rejections[d.rejection] ?? 0) + 1;
+    }
+    let evaluated = 0;
+    let covered = 0;
+    for (const d of recent) {
+      for (const sym of d.signals ?? []) {
+        for (const x of sym.signals ?? []) {
+          evaluated += 1;
+          if (!x.noData && x.note !== '数据不足') covered += 1;
+        }
+      }
+    }
+    const llmErrors = recent.filter(d => d.llmError).length;
+    const r3 = (v) => Math.round(v * 1000) / 1000;
+    return {
+      cycles: n,
+      candidateRate: r3(withCandidates / n),
+      rejections,
+      signalCoverage: evaluated ? r3(covered / evaluated) : null,
+      bars,
+      barsRequired,
+      llmErrorRate: r3(llmErrors / n),
+    };
+  }
+
+  /** Health reflection fires when the system is alive but produces nothing. */
+  function healthTriggered(h) {
+    if (!h || h.cycles < 20) return false;
+    if (h.candidateRate < 0.05) return true; // effectively zero candidates
+    if (h.signalCoverage != null && h.signalCoverage < 0.3) return true; // severe data starvation
+    return false;
+  }
+
+  /** Only signal lookback params, shrink-only, qualify for the bootstrap fix. */
+  const SHRINK_PATH = /^signals\.[^.]+\.params\.(fast|slow|period)$/;
+  /**
+   * Apply shrink-only lookback fixes for a health reflection: bounds + step
+   * alignment are enforced, but the performance jump-guard is not — direction
+   * is already validated (new < current), and a shorter lookback can never
+   * loosen a risk control. This is the bootstrap escape from the sample floor.
+   */
+  function applyShrinkOnly(nextStrategy, params) {
+    const applied = {};
+    const evolvable = cfg.strategy.evolvable ?? [];
+    for (const [path, value] of Object.entries(params ?? {})) {
+      if (!SHRINK_PATH.test(path)) continue;
+      const w = evolvable.find(x => x.path === path);
+      if (!w) continue;
+      const v = Number(value);
+      const cur = getPath(current().strategy, path);
+      if (!Number.isFinite(v) || !Number.isFinite(cur) || !(v < cur)) continue;
+      if (v < w.min || v > w.max) continue;
+      const step = w.step ?? 0;
+      if (step > 0 && Math.abs(w.min + Math.round((v - w.min) / step) * step - v) > 1e-9) continue;
+      if (setPath(nextStrategy, path, v)) applied[path] = v;
+    }
+    return applied;
+  }
+
+  function buildHealthPrompt(health) {
+    const journal = db.getState(pkey('decisions')) ?? [];
+    const last = journal.at(-1);
+    const lastEntry = last
+      ? { decision: last.decision, rejection: last.rejection, picked: last.picked, signals: last.signals }
+      : {};
+    return [
+      `你是${cfg.name}策略的运行诊断引擎。系统长期零成交，请诊断「为什么没有产生交易」并给出改进。`,
+      '',
+      '## 运行健康指标',
+      JSON.stringify(health, null, 2),
+      '',
+      '## 当前参数',
+      JSON.stringify(current().strategy, null, 2),
+      '',
+      '## 最近一轮决策（含信号评分）',
+      JSON.stringify(lastEntry, null, 2),
+      '',
+      '## 规则',
+      '- 只能输出「信号回看参数」的调整（fast/slow/period），且只能调小——缩短回看以适配现有数据量；调大或改其它参数一律无效',
+      '- 若问题不在参数（如交易时段、候选阈值、数据源缺失），写在 critique 里说明，不要给 params',
+      '',
+      '只输出 JSON：{"critique":"...","params":{"路径":数值}}',
+    ].join('\n');
   }
 
   function setPath(obj, path, value) {
@@ -945,16 +1050,24 @@ export function createProductEngine({
 
   async function reflectIfDue({ force = false } = {}) {
     const stats = versionStats();
+    const health = healthStats();
     const risk = effectiveRisk();
     const lossTriggered = stats.returnPct <= (risk.reflectLossPct ?? -3)
       || (Number.isFinite(risk.reflectConsecLosses) && stats.consecLosses >= risk.reflectConsecLosses)
       || (Number.isFinite(risk.reflectMaxDrawdownPct) && stats.maxDrawdownPct <= risk.reflectMaxDrawdownPct);
     const intervalMs = (cfg.reflectIntervalHours ?? 24) * 3600_000;
     const periodicDue = now() - lastReflectAt >= intervalMs;
-    if (!force && !lossTriggered && !periodicDue) return jsonSafe({ reflected: false, stats });
+    // Health trigger: alive but producing nothing (independent clock, 6h cool-down).
+    const healthLast = db.getState(pkey('lastHealthReflectAt')) ?? 0;
+    const healthDue = healthTriggered(health) && now() - healthLast >= 6 * 3600_000;
+    if (!force && !lossTriggered && !periodicDue && !healthDue) {
+      return jsonSafe({ reflected: false, stats, health });
+    }
+    const trigger = force ? 'manual' : lossTriggered ? 'loss' : healthDue ? 'health' : 'periodic';
     let parsed = null;
     try {
-      parsed = parseReflection(await llm(buildReflectPrompt(stats)));
+      const prompt = trigger === 'health' ? buildHealthPrompt(health) : buildReflectPrompt(stats);
+      parsed = parseReflection(await llm(prompt));
     } catch { /* llm failure keeps the version */ }
     const critique = String(parsed?.critique ?? '').slice(0, 800) || null;
     const params = parsed?.params ?? {};
@@ -970,17 +1083,22 @@ export function createProductEngine({
       next.strategy.risk = { ...(cfg.risk ?? {}) };
     }
     // Anti-overfit: tuning needs a real trade sample. Below the floor only the
-    // critique is recorded — loss-triggered forks still happen, untuned.
+    // critique is recorded — EXCEPT a health-triggered reflection may apply
+    // shrink-only lookback fixes (shorter lookback cannot loosen any risk).
     const canEvolve = stats.fills >= (effectiveRisk().minSamplesToEvolve ?? 5);
-    const applied = canEvolve ? applyParams(next.strategy, params) : {};
+    const applied = canEvolve
+      ? applyParams(next.strategy, params)
+      : trigger === 'health'
+        ? applyShrinkOnly(next.strategy, params)
+        : {};
     const changed = Object.keys(applied).length > 0;
     const journal = db.getState(pkey('reflections')) ?? [];
     journal.push({
-      ts: now(), trigger: force ? 'manual' : lossTriggered ? 'loss' : 'periodic',
-      stats, critique, applied, versionCreated: changed || lossTriggered,
+      ts: now(), trigger, stats, health, critique, applied, versionCreated: changed || lossTriggered,
     });
     db.putState(pkey('reflections'), journal.slice(-100));
     lastReflectAt = now();
+    if (trigger === 'health') db.putState(pkey('lastHealthReflectAt'), now());
 
     if (changed || lossTriggered) {
       next.startPnl = snapshotOf(account, priceOf).totalPnl;
