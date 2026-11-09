@@ -103,7 +103,7 @@ export function createProductEngine({
 
   /* ------------------------------ market data ------------------------------ */
 
-  /** Seed history once per symbol so indicators work immediately. */
+  /** Seed history once per symbol so signal bars work immediately. */
   async function seedHistory() {
     if (product.market.kind !== 'multi') return;
     for (const w of pool().slice(0, 20)) {
@@ -114,7 +114,7 @@ export function createProductEngine({
       try {
         let rows = await fetchDailyHistory(fetchFn, w.symbol, 120).catch(() => []);
         if (rows.length < 30) {
-          const minutes = await fetchMinuteHistory(fetchFn, w.symbol).catch(() => []);
+          const minutes = await fetchMinuteHistory(fetchFn, w.symbol, cfg.timezone).catch(() => []);
           rows = [...rows, ...minutes];
         }
         for (const r of rows) {
@@ -369,6 +369,7 @@ export function createProductEngine({
         qty: Number.isFinite(j.qty) ? j.qty : null,
         reason: String(j.reason ?? '').slice(0, 500),
         confidence: Number.isFinite(j.confidence) ? j.confidence : 0.5,
+        horizonHours: Number.isFinite(j.horizonHours) ? j.horizonHours : null,
         plan: j.plan ?? null,
       };
     } catch {
@@ -417,10 +418,26 @@ export function createProductEngine({
   }
 
   function buyQuantity(decision, symbol, price) {
-    const raw = decision.qty != null && decision.qty > 0
-      ? decision.qty
-      : (decision.amount ?? effectiveRisk().perTrade ?? 0) / price;
-    return roundLot(cfg.rules, raw, symbol); // lot discipline applies to explicit qty too
+    // Explicit quantity keeps lot discipline; an amount is risk-budgeted:
+    // riskPerTradePct of capital ÷ stop distance caps the notional so each
+    // trade risks the SAME fraction of capital regardless of stop width.
+    if (decision.qty != null && decision.qty > 0) return roundLot(cfg.rules, decision.qty, symbol);
+    const risk = effectiveRisk();
+    let notional = decision.amount ?? risk.perTrade ?? 0;
+    const stopPct = Math.abs(risk.stopLossPct ?? 0);
+    const riskPct = risk.riskPerTradePct;
+    if (Number.isFinite(riskPct) && stopPct > 0) {
+      const budget = (account.initial * riskPct) / (stopPct / 100);
+      notional = Math.min(notional, budget);
+    }
+    let qty = roundLot(cfg.rules, notional / price, symbol);
+    // Lumpy lots (e.g. HK 100-share boards): when the budget buys less than
+    // one lot, take the smallest position the per-trade cap still allows.
+    if (qty <= 0) {
+      const oneLot = cfg.rules.unit === 'gram' ? 1 : Math.max(1, Math.floor(cfg.rules.lotSize ?? 1));
+      if (oneLot * price <= (risk.perTrade ?? Infinity)) qty = oneLot;
+    }
+    return qty;
   }
 
   function execute(decision, picked = null) {
@@ -510,6 +527,8 @@ export function createProductEngine({
     const risk = effectiveRisk();
     const stop = risk.stopLossPct;
     const take = risk.takeProfitPct;
+    const trail = risk.trailingStopPct;
+    const maxHoldMs = Number.isFinite(risk.maxHoldHours) ? risk.maxHoldHours * 3600_000 : null;
     for (const symbol of Object.keys(account.positions)) {
       const p = account.positions[symbol];
       const price = priceOf(symbol);
@@ -517,6 +536,21 @@ export function createProductEngine({
       const pct = ((price - p.costAvg) / p.costAvg) * 100;
       if (Number.isFinite(stop) && pct <= stop) return { kind: 'stop-loss', symbol, pct };
       if (Number.isFinite(take) && pct >= take) return { kind: 'take-profit', symbol, pct };
+      // Trailing stop: once in profit, lock gains by exiting when price falls
+      // trailingStopPct from the highest price seen since entry.
+      if (Number.isFinite(trail) && pct >= 0) {
+        p.peakPrice = Math.max(p.peakPrice ?? price, price);
+        const fromPeak = ((price - p.peakPrice) / p.peakPrice) * 100;
+        if (fromPeak <= -trail) return { kind: 'trailing-stop', symbol, pct, fromPeak };
+      }
+      // Time stop: a losing position held beyond maxHoldHours is dead money.
+      if (maxHoldMs != null && pct <= 0) {
+        const oldest = (p.lots ?? []).reduce((a, l) => Math.min(a, l.ts ?? Infinity), Infinity);
+        if (Number.isFinite(oldest) && now() - oldest >= maxHoldMs) {
+          const heldH = Math.round((now() - oldest) / 3600_000);
+          return { kind: 'time-stop', symbol, pct, heldH };
+        }
+      }
     }
     return { kind: 'none' };
   }

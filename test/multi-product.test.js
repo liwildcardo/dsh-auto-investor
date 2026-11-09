@@ -92,6 +92,19 @@ test('minute history parses Tencent rows (fallback when daily bars are thin)', a
   assert.equal(rows.length, 2);
   assert.equal(rows[1].price, 420.5);
   assert.ok(Number.isFinite(rows[0].ts));
+  // 09:30 market-local in Hong Kong = 01:30 UTC.
+  assert.equal(new Date(rows[0].ts).toISOString(), '2026-11-07T01:30:00.000Z');
+});
+
+test('minute history stamps US times in the US market timezone', async () => {
+  const fetchFn = async () => ({
+    ok: true,
+    json: async () => ({ data: { usAAPL: { data: { date: '20261106', data: ['1600 342.37 44703806'] } } } }),
+  });
+  const rows = await fetchMinuteHistory(fetchFn, 'usAAPL', 'America/New_York');
+  assert.equal(rows.length, 1);
+  // 16:00 New York on 2026-11-06 is EST (−05:00) → 21:00 UTC, NOT 08:00 UTC.
+  assert.equal(new Date(rows[0].ts).toISOString(), '2026-11-06T21:00:00.000Z');
 });
 
 test('productConfig overrides deep-merge (risk defaults survive)', () => {

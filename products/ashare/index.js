@@ -50,12 +50,6 @@ export default {
 
   strategy: {
     barInterval: '1d',
-    indicators: [
-      { id: 'ma', params: { period: 20 } },
-      { id: 'rsi', params: { period: 14 } },
-      { id: 'volume', params: { period: 20 } },
-      { id: 'volatility', params: { window: 60 } },
-    ],
     signals: [
       { id: 'trend', params: { fast: 5, slow: 20 }, weight: 1.2 },
       { id: 'momentum', params: { period: 10, threshold: 0.03 }, weight: 1 },
@@ -97,6 +91,8 @@ export default {
     perTrade: 10000,
     perSymbolPct: 25,
     minVolatility: 0.006, // daily σ floor
+    trailingStopPct: 3,
+    maxHoldHours: 120, // a losing position held 5 trading days is dead money
     dailyLossPct: -2.5,
     stopLossPct: -5,
     takeProfitPct: 10,

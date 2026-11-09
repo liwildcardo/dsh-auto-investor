@@ -10,7 +10,6 @@ const DEFAULTS = {
   universe: { watchlist: () => [], lotSize: 1 },
   news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: true },
   strategy: {
-    indicators: [],
     signals: [],
     candidates: null,
     prompt: {},
@@ -39,13 +38,16 @@ const DEFAULTS = {
     hardMinIntervalHours: 2,
   },
   risk: {
-    perTrade: 5000, // native currency amount
+    perTrade: 5000, // native currency amount (hard cap on notional)
+    riskPerTradePct: 0.005, // risk budget: 0.5% of capital ÷ stop distance
     perSymbolPct: 100,
     dailyLossPct: -2,
     circuitBreakerPct: -15, // total drawdown from the initial capital stops new trades
     stopLossPct: -3,
     takeProfitPct: 6,
     minVolatility: undefined, // per-bar σ floor for entries (products set their own)
+    trailingStopPct: null, // lock profits: exit when price falls this far from the peak (in profit only)
+    maxHoldHours: null, // time stop: exit a losing position held longer than this
     // Parameter evolution needs real samples; below this only the critique is
     // recorded (no version fork for tuning, loss-triggered forks still work).
     minSamplesToEvolve: 5,
@@ -88,6 +90,6 @@ export function normalizeProduct(raw) {
     // Arrays are product state, never shared with the defaults object.
     rules: { ...merged.rules, sessions: merged.rules.sessions.map(s => [...s]), holidays: [...(merged.rules.holidays ?? [])] },
     news: { ...merged.news, feeds: [...(merged.news.feeds ?? [])], queries: [...(merged.news.queries ?? [])] },
-    strategy: { ...merged.strategy, indicators: [...merged.strategy.indicators], signals: [...merged.strategy.signals] },
+    strategy: { ...merged.strategy, signals: [...merged.strategy.signals] },
   };
 }

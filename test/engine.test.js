@@ -50,7 +50,6 @@ function makeProduct(overrides = {}) {
     universe: { watchlist: () => [{ symbol: 'x', name: 'X' }, { symbol: 'y', name: 'Y' }], lotSize: 100 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
     strategy: {
-      indicators: [],
       signals: [{ id: 'trend', params: { fast: 5, slow: 20 }, weight: 1 }],
       candidates: { threshold: 0.8 },
       plan: { maxTradesPerDay: 3, minIntervalHours: 0, maxPositionPct: 40 },
@@ -229,7 +228,7 @@ test('single product keys day-open by the position symbol (today pnl non-zero)',
     universe: { watchlist: () => [{ symbol: 'AU9999', name: '黄金', lot: 1 }], lotSize: 1 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
     strategy: {
-      indicators: [], signals: [{ id: 'trend', params: { fast: 2, slow: 3 } }],
+      signals: [{ id: 'trend', params: { fast: 2, slow: 3 } }],
       candidates: { threshold: 0.8 }, plan: {}, prompt: {}, decision: {}, evolvable: [],
     },
     rules: { unit: 'gram', lotSize: 1, settlement: 'T+0', fees: {}, sessions: [[550, 1560]], holidays: [] },
@@ -308,7 +307,7 @@ test('non-CNY products report a CNY conversion rate', async (t) => {
     },
     universe: { watchlist: () => [{ symbol: 'usX', name: 'X', lot: 1 }], lotSize: 1 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
-    strategy: { indicators: [], signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, prompt: {}, decision: {}, evolvable: [] },
+    strategy: { signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, prompt: {}, decision: {}, evolvable: [] },
     rules: { unit: 'share', lotSize: 1, settlement: 'T+1', allowSameDaySell: true, fees: {}, sessions: [[570, 960]], holidays: [] },
     risk: { perTrade: 1000, perSymbolPct: 25, minConfidence: 0.5, stopLossPct: -5, takeProfitPct: 10 },
   });
@@ -357,9 +356,9 @@ test('total-drawdown circuit breaker blocks new trades', async (t) => {
     },
     universe: { watchlist: () => [{ symbol: 'x', name: 'X' }], lotSize: 100 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
-    strategy: { indicators: [], signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, plan: {}, prompt: {}, decision: {}, evolvable: [] },
+    strategy: { signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, plan: {}, prompt: {}, decision: {}, evolvable: [] },
     rules: { unit: 'share', lotSize: 100, settlement: 'T+0', fees: {}, sessions: [[570, 690]], holidays: [] },
-    risk: { perTrade: 60000, perSymbolPct: 100, circuitBreakerPct: -10, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50 },
+    risk: { perTrade: 60000, perSymbolPct: 100, riskPerTradePct: 0.5, circuitBreakerPct: -10, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50 },
   });
   let llmOut = JSON.stringify({ action: 'buy', symbol: 'x', amount: 50000, confidence: 0.9 });
   seedTrend(db, { product: 'brk', symbol: 'x' }); // candidate bars for the first entry

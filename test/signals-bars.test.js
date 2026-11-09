@@ -30,7 +30,6 @@ function harness(t, { product: productPatch = {}, risk = {}, signals, llm } = {}
     universe: { watchlist: () => [{ symbol: 'x', name: 'X' }], lotSize: 100 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
     strategy: {
-      indicators: [],
       signals: signals ?? [{ id: 'trend', params: { fast: 2, slow: 3 }, weight: 1 }],
       candidates: { threshold: 0.8 },
       prompt: {},

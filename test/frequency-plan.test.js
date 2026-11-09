@@ -28,8 +28,7 @@ function makeProduct(plan, extra = {}) {
       universe: { watchlist: () => [{ symbol: 'x', name: 'X' }], lotSize: 100 },
       news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
       strategy: {
-        indicators: [],
-        signals: [{ id: 'trend' }],
+          signals: [{ id: 'trend' }],
         candidates: { threshold: 0.8 },
         prompt: {},
         decision: {},

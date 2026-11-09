@@ -46,11 +46,6 @@ export default {
 
   strategy: {
     barInterval: '1h', // no daily history source; hourly session bars from live ticks
-    indicators: [
-      { id: 'ma', params: { period: 20 } },
-      { id: 'rsi', params: { period: 14 } },
-      { id: 'volatility', params: { window: 60 } },
-    ],
     signals: [
       { id: 'trend', params: { fast: 5, slow: 20 }, weight: 1.2 },
       { id: 'momentum', params: { period: 10, threshold: 0.02 }, weight: 1 },
@@ -86,6 +81,7 @@ export default {
     perTrade: 5000,
     perSymbolPct: 100,
     minVolatility: 0.0004, // hourly σ floor: no entries in dead markets
+    trailingStopPct: 1.5, // lock intraday profits (gold is a trend asset; no time stop)
     dailyLossPct: -2,
     stopLossPct: -3,
     takeProfitPct: 6,

@@ -28,6 +28,23 @@ export function zonedParts(ts, timeZone) {
 
 const isWeekend = (weekday) => weekday === 'Sat' || weekday === 'Sun';
 
+/**
+ * Epoch for a wall-clock time in a market timezone (handles DST): converges
+ * on the offset whose local parts match the requested date/time.
+ */
+export function zonedEpoch(year, month, day, hour, minute, timeZone) {
+  const target = Date.UTC(year, month - 1, day, hour, minute);
+  let ts = target;
+  for (let i = 0; i < 3; i += 1) {
+    const p = zonedParts(ts, timeZone);
+    const wall = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+    const diff = wall - target;
+    if (diff === 0) break;
+    ts -= diff;
+  }
+  return ts;
+}
+
 /** Session check with wrap-around support (endMin may exceed 1440, e.g. gold 1560). */
 export function isSessionOpen(rules, ts, timeZone) {
   const z = zonedParts(ts, timeZone);

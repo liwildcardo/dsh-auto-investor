@@ -2,6 +2,7 @@
  * 行情适配器：腾讯行情（A股/美股/港股通用）。返回统一结构：
  * { symbol, price, prevClose, open, volume, currency }
  */
+import { zonedEpoch } from './market-rules.js';
 
 const FIELD = { price: 3, prevClose: 4, open: 5, volume: 6 };
 
@@ -131,9 +132,11 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
 
 /**
  * Intraday minute history (Tencent) — fallback when daily bars are thin or
- * missing (e.g. US symbols). Returns [{ts, price, volume}] oldest first.
+ * missing (e.g. US symbols). Timestamps are built in the MARKET's timezone
+ * (the API returns market-local clock times). Returns [{ts, price, volume}]
+ * oldest first.
  */
-export async function fetchMinuteHistory(fetchFn, symbol, timeoutMs = 10000) {
+export async function fetchMinuteHistory(fetchFn, symbol, timeZone = 'Asia/Shanghai', timeoutMs = 10000) {
   const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${encodeURIComponent(symbol)}`;
   const res = await fetchFn(url, {
     signal: AbortSignal.timeout(timeoutMs),
@@ -143,7 +146,7 @@ export async function fetchMinuteHistory(fetchFn, symbol, timeoutMs = 10000) {
   const json = await res.json();
   const node = json?.data?.[symbol] ?? null;
   const rows = node?.data?.data ?? [];
-  const day = String(node?.data?.date ?? '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+  const dayMatch = /^(\d{4})(\d{2})(\d{2})$/.exec(String(node?.data?.date ?? ''));
   const out = [];
   for (const row of rows) {
     const parts = String(row).trim().split(/\s+/);
@@ -151,7 +154,12 @@ export async function fetchMinuteHistory(fetchFn, symbol, timeoutMs = 10000) {
     const hhmm = parts[0];
     const price = Number(parts[1]);
     if (!/^\d{4}$/.test(hhmm) || !Number.isFinite(price) || price <= 0) continue;
-    const ts = Date.parse(`${day || '1970-01-01'}T${hhmm.slice(0, 2)}:${hhmm.slice(2)}:00+08:00`);
+    if (!dayMatch) continue; // no date → no trustworthy timestamp
+    const ts = zonedEpoch(
+      Number(dayMatch[1]), Number(dayMatch[2]), Number(dayMatch[3]),
+      Number(hhmm.slice(0, 2)), Number(hhmm.slice(2)),
+      timeZone,
+    );
     if (!Number.isFinite(ts)) continue;
     out.push({ ts, price, volume: Number(parts[2]) || null });
   }

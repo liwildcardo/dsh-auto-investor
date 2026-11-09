@@ -26,7 +26,6 @@ function harness(t, { llm, risk = {}, seedFills = 0 } = {}) {
     universe: { watchlist: () => [{ symbol: 'x', name: 'X' }], lotSize: 100 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
     strategy: {
-      indicators: [],
       signals: [{ id: 'trend', params: { fast: 2, slow: 3 }, weight: 1 }],
       candidates: { threshold: 0.8 },
       prompt: {}, decision: {},

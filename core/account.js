@@ -37,7 +37,7 @@ export function applyBuy(account, { symbol, qty, price, fee = 0, ts = 0, earlies
   if (cost > account.cash + 1e-9) throw new Error('insufficient cash');
   const pos = account.positions[symbol] ?? { qty: 0, costAvg: 0, earliestSellTs: 0, lots: [] };
   pos.lots ??= [];
-  pos.lots.push({ qty, cost: (qty * price + fee) / qty, earliestSellTs: earliestSellTs || ts });
+  pos.lots.push({ qty, cost: (qty * price + fee) / qty, earliestSellTs: earliestSellTs || ts, ts });
   settlePos(pos);
   account.positions[symbol] = pos;
   account.cash -= cost;
