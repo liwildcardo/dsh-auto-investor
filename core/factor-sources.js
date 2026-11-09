@@ -107,30 +107,44 @@ export function readFactors(db, now = () => Date.now()) {
  */
 async function getEmFactor(fetchFn, db, { key, secid }, now) {
   const cached = db.getState(key);
-  if (cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE) return cached;
+  const fresh = cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE;
+  // Fresh value AND enough history → nothing to do. A fresh value with a
+  // thin history still runs the seed below (the 26h gate must not block it).
+  if (fresh && (cached.values?.length ?? 0) >= 2) return cached;
   const started = Date.now();
   try {
-    const res = await fetchFn(
-      `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f60,f86,f58`,
-      { signal: AbortSignal.timeout(30_000), headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://quote.eastmoney.com/' } },
-    );
-    if (!res.ok) throw new Error(`em http ${res.status}`);
-    const parsed = parseEmQuote(await res.json(), now);
-    if (!parsed) throw new Error('em quote parse failed');
-    let values = mergeHistory(cached?.values ?? [], [{ date: parsed.asOf, value: parsed.value }]);
-    // Bootstrap: delta5d needs ≥2 points; without history the factor would
-    // abstain for days. One-shot best-effort seed from the daily kline.
-    if (values.length < 2) {
+    let entry;
+    if (fresh) {
+      entry = { ...cached }; // value is current; only history is missing
+    } else {
+      const res = await fetchFn(
+        `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f60,f86,f58`,
+        { signal: AbortSignal.timeout(30_000), headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://quote.eastmoney.com/' } },
+      );
+      if (!res.ok) throw new Error(`em http ${res.status}`);
+      const parsed = parseEmQuote(await res.json(), now);
+      if (!parsed) throw new Error('em quote parse failed');
+      entry = {
+        values: mergeHistory(cached?.values ?? [], [{ date: parsed.asOf, value: parsed.value }]),
+        value: parsed.value,
+        asOf: parsed.asOf,
+        fetchedAt: now(),
+      };
+    }
+    // Bootstrap: delta5d needs ≥2 points; one-shot best-effort seed from the
+    // daily kline (failures retry next cycle — the gate keeps values < 2 open).
+    if ((entry.values?.length ?? 0) < 2) {
       try {
         const beg = new Date(now() - 60 * DAY).toISOString().slice(0, 10).replaceAll('-', '');
         const h = await fetchFn(
           `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3&fields2=f51,f52,f53&klt=101&fqt=0&beg=${beg}&end=20991231`,
           { signal: AbortSignal.timeout(15_000), headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://quote.eastmoney.com/' } },
         );
-        if (h.ok) values = mergeHistory(parseEmKlines((await h.json())?.data?.klines), values);
-      } catch { /* seed failure → next 26h cycle retries */ }
+        if (h.ok) {
+          entry = { ...entry, values: mergeHistory(parseEmKlines((await h.json())?.data?.klines), entry.values ?? []).slice(-60) };
+        }
+      } catch { /* seed failure → next cycle retries */ }
     }
-    const entry = { values: values.slice(-60), value: parsed.value, asOf: parsed.asOf, fetchedAt: now() };
     db.putState(key, entry);
     return entry;
   } catch (e) {
@@ -151,32 +165,42 @@ async function getEmFactor(fetchFn, db, { key, secid }, now) {
 async function getUsdIndex(fetchFn, db, now) {
   const key = 'factor:usdIndex';
   const cached = db.getState(key);
-  if (cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE) return cached;
+  const fresh = cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE;
+  if (fresh && (cached.values?.length ?? 0) >= 2) return cached;
   const started = Date.now();
   try {
-    const res = await fetchFn('https://open.er-api.com/v6/latest/USD', {
-      signal: AbortSignal.timeout(30_000),
-      headers: { 'user-agent': 'Mozilla/5.0' },
-    });
-    if (!res.ok) throw new Error(`fx http ${res.status}`);
-    const json = await res.json();
-    const value = computeDxy(json?.rates);
-    if (!Number.isFinite(value)) throw new Error('dxy unavailable');
-    const asOf = new Date(now() + 8 * 3600_000).toISOString().slice(0, 10); // Shanghai date
-    let values = mergeHistory(cached?.values ?? [], [{ date: asOf, value }]);
+    let entry;
+    if (fresh) {
+      entry = { ...cached };
+    } else {
+      const res = await fetchFn('https://open.er-api.com/v6/latest/USD', {
+        signal: AbortSignal.timeout(30_000),
+        headers: { 'user-agent': 'Mozilla/5.0' },
+      });
+      if (!res.ok) throw new Error(`fx http ${res.status}`);
+      const json = await res.json();
+      const value = computeDxy(json?.rates);
+      if (!Number.isFinite(value)) throw new Error('dxy unavailable');
+      const asOf = new Date(now() + 8 * 3600_000).toISOString().slice(0, 10); // Shanghai date
+      entry = {
+        values: mergeHistory(cached?.values ?? [], [{ date: asOf, value }]),
+        value,
+        asOf,
+        fetchedAt: now(),
+      };
+    }
     // Bootstrap from ECB history (frankfurter, base USD → same per-USD shape)
     // so the 5-day delta works from day one.
-    if (values.length < 2) {
+    if ((entry.values?.length ?? 0) < 2) {
       try {
         const start = new Date(now() - 60 * DAY).toISOString().slice(0, 10);
         const h = await fetchFn(`https://api.frankfurter.app/${start}..?from=USD`, {
           signal: AbortSignal.timeout(15_000),
           headers: { 'user-agent': 'Mozilla/5.0' },
         });
-        if (h.ok) values = mergeHistory(parseFrankfurterDxy(await h.json()), values);
-      } catch { /* seed failure → next 26h cycle retries */ }
+        if (h.ok) entry = { ...entry, values: mergeHistory(parseFrankfurterDxy(await h.json()), entry.values ?? []).slice(-60) };
+      } catch { /* seed failure → next cycle retries */ }
     }
-    const entry = { values: values.slice(-60), value, asOf, fetchedAt: now() };
     db.putState(key, entry);
     return entry;
   } catch (e) {

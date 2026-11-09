@@ -152,6 +152,29 @@ test('history seeding unlocks delta5d on the first collect', async (t) => {
   assert.ok(Number.isFinite(f.usdIndex.delta5d), 'usd delta seeded from ECB history');
 });
 
+test('a fresh single-point cache still seeds history without a quote refetch', async (t) => {
+  const db = harness(t);
+  const now = () => Date.UTC(2026, 10, 9, 4, 0);
+  // Fresh (fetched minutes ago) but only one history point — the 26h gate
+  // must not block the seed (this exact state existed in production).
+  db.putState('factor:em:UI10Y', { values: [{ date: '2026-11-09', value: 2.6174 }], asOf: '2026-11-09', fetchedAt: now() - 60_000 });
+  db.putState('factor:usdIndex', { values: [{ date: '2026-11-09', value: 124.13 }], value: 124.13, asOf: '2026-11-09', fetchedAt: now() - 60_000 });
+  const calls = [];
+  const fetchFn = async (url) => {
+    const u = String(url);
+    calls.push(u);
+    if (u.includes('push2his')) return { ok: true, json: async () => ({ data: { klines: ['2026-11-03,2.60,2.66', '2026-11-04,2.66,2.58'] } }) };
+    if (u.includes('frankfurter')) return { ok: true, json: async () => ({ rates: { '2026-11-03': { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 } } }) };
+    return { ok: true, json: async () => ({ data: { f43: 99999 }, rates: {} }) };
+  };
+  const f = await collectFactors(fetchFn, db, now);
+  assert.ok(!calls.some(u => u.includes('api/qt/stock/get')), 'fresh quote not refetched');
+  assert.ok(!calls.some(u => u.includes('open.er-api.com')), 'fresh fx not refetched');
+  assert.ok(Number.isFinite(f.realYield.delta5d), `seed ran despite fresh gate, got ${f.realYield.delta5d}`);
+  assert.ok(Number.isFinite(f.usdIndex.delta5d), 'usd seeded too');
+  assert.ok(Math.abs(f.realYield.value - 2.6174) < 1e-9, 'current value preserved');
+});
+
 test('peFromQuote reads field 39 across markets', () => {
   const mk = (pe39) => Array.from({ length: 50 }, (_, i) => (i === 39 ? String(pe39) : '0'));
   assert.equal(peFromQuote(mk('21.99')), 21.99, 'A-share Maotai');
