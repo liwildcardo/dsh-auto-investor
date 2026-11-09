@@ -497,9 +497,6 @@ window.__ModuleLoader__.load({
         parts.push(f.usdIndex
           ? `美元指数 ${Number.isFinite(f.usdIndex.value) ? f.usdIndex.value.toFixed(2) : '—'}（5日${pct(f.usdIndex.delta5d)}，截至${asOf(f.usdIndex)}${mark(f.usdIndex)}）`
           : '美元指数 数据不可用');
-        if (f.inflationExp) {
-          parts.push(`10Y通胀预期 ${Number.isFinite(f.inflationExp.value) ? `${f.inflationExp.value}%` : '—'}（截至${asOf(f.inflationExp)}${mark(f.inflationExp)}）`);
-        }
         // Stock pools: cross-sectional PE range from the quote map.
         if (state.quote && typeof state.quote === 'object') {
           const pes = Object.values(state.quote)

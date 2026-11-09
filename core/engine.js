@@ -367,7 +367,6 @@ export function createProductEngine({
     };
     const ry = f.realYield;
     const usd = f.usdIndex;
-    const ie = f.inflationExp;
     return [
       ry
         ? `实际收益率 ${Number.isFinite(ry.value) ? `${ry.value}%` : '—'}（5日 ${fmtDelta(ry.delta5d, 'bp')}，数据截至 ${ry.asOf}）${mark(ry)}`
@@ -375,9 +374,6 @@ export function createProductEngine({
       usd
         ? `美元指数 ${Number.isFinite(usd.value) ? usd.value.toFixed(2) : '—'}（5日 ${fmtDelta(usd.delta5d, 'pct')}，数据截至 ${usd.asOf}）${mark(usd)}`
         : '美元指数 数据不可用',
-      ie
-        ? `10Y通胀预期 ${Number.isFinite(ie.value) ? `${ie.value}%` : '—'}（数据截至 ${ie.asOf}）${mark(ie)}`
-        : '10Y通胀预期 数据不可用',
     ];
   }
 

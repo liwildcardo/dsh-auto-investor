@@ -1,27 +1,28 @@
 /**
- * 宏观/基本面因子数据层（批次 E）：
- *  - FRED CSV 系列（实际收益率 DFII10、通胀预期 T10YIE），无需密钥
- *  - 美元指数 DXY：er-api 汇率按标准公式合成，逐日累积历史
- *  - 全部带 staleness 缓存（26h 重抓门限），失败沿用旧缓存
+ * 宏观/基本面因子数据层（批次 E，换源版）：
+ *  - 实际收益率：东方财富 `171.UI10Y`（美国10年期通胀国债收益率，JSON，
+ *    f43÷1000 为百分比；FRED 在宿主进程内实测 28–30s socket 挂起、web 服务
+ *    拒收 application/csv，故弃用——诊断记录见 spec §9）
+ *  - 美元指数：er-api 汇率按 DXY 标准公式合成，逐日累积历史
+ *  - 全部带 staleness 缓存（26h 重抓门限），失败沿用旧缓存并记录错误
  * 派生输出统一为 {value, asOf, delta5d, stale}：delta 为 5 日变化
  * （收益率类=百分点差，指数类=%变化），asOf 超过 5 天 → stale=true。
  */
 
 const DAY = 86_400_000;
-const FRED_MAX_AGE = 26 * 3600_000; // daily series republish within ~26h
+const MAX_AGE = 26 * 3600_000; // daily series republish within ~26h
 
-/** Parse `observation_date,VALUE` CSV (skip '.' missing values). */
-export function parseFredCsv(text) {
-  const out = [];
-  for (const line of String(text ?? '').split('\n').slice(1)) {
-    const idx = line.indexOf(',');
-    if (idx <= 0) continue;
-    const date = line.slice(0, idx).trim();
-    const value = Number(line.slice(idx + 1).trim());
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(value)) continue; // '.' etc.
-    out.push({ date, value });
-  }
-  return out;
+/** Parse the eastmoney quote payload → {value, asOf, name} or null. */
+export function parseEmQuote(json, now = () => Date.now()) {
+  const d = json?.data;
+  const raw = Number(d?.f43);
+  if (!Number.isFinite(raw)) return null;
+  const value = raw / 10000; // eastmoney bond yields are quoted ×10000 (26190 → 2.6190%)
+  const ts = Number(d?.f86) * 1000;
+  const asOf = Number.isFinite(ts) && ts > 0
+    ? new Date(ts + 8 * 3600_000).toISOString().slice(0, 10) // Shanghai date
+    : new Date(now() + 8 * 3600_000).toISOString().slice(0, 10);
+  return { value, asOf, name: d?.f58 ? String(d.f58) : null };
 }
 
 /** DXY standard formula from USD-base FX rates (er-api shape). */
@@ -65,43 +66,43 @@ function withDelta(entry, now, kind) {
 
 /** Read cached factors (no network) — used by status/prompt. */
 export function readFactors(db, now = () => Date.now()) {
-  const fred = (id, kind) => withDelta(db.getState(`factor:fred:${id}`), now, kind);
   return {
-    realYield: fred('DFII10', 'pp'),
-    inflationExp: fred('T10YIE', 'pp'),
+    realYield: withDelta(db.getState('factor:em:UI10Y'), now, 'pp'),
     usdIndex: withDelta(db.getState('factor:usdIndex'), now, 'pct'),
   };
 }
 
-/** Fetch one FRED series with a 26h cache; failures fall back to the cache. */
-async function getFredSeries(fetchFn, db, id, now) {
-  const key = `factor:fred:${id}`;
+/**
+ * Fetch an eastmoney quote and accumulate daily history (60 obs) behind the
+ * 26h gate; failures keep the cache and record the error for observability
+ * (fetchedAt: 0 → the next cycle retries instead of waiting 26h).
+ */
+async function getEmFactor(fetchFn, db, { key, secid }, now) {
   const cached = db.getState(key);
-  if (cached && now() - (cached.fetchedAt ?? 0) < FRED_MAX_AGE) return cached;
+  if (cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE) return cached;
   const started = Date.now();
   try {
-    // cosd limits the CSV range (~60 days ≈ 784 bytes vs the full 99KB):
-    // a tiny payload survives slow paths that the full history could not.
-    const cosd = new Date(now() - 60 * DAY + 8 * 3600_000).toISOString().slice(0, 10);
-    const res = await fetchFn(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}&cosd=${cosd}`, {
-      signal: AbortSignal.timeout(30_000), // host-process fetch can be slower; never blocks (background)
-      headers: { 'user-agent': 'Mozilla/5.0' },
-    });
-    if (!res.ok) throw new Error(`fred http ${res.status}`);
-    const values = parseFredCsv(await res.text()).slice(-60);
-    if (!values.length) throw new Error('empty fred series');
-    const entry = { values, asOf: values[values.length - 1].date, fetchedAt: now() };
+    const res = await fetchFn(
+      `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f60,f86,f58`,
+      { signal: AbortSignal.timeout(30_000), headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://quote.eastmoney.com/' } },
+    );
+    if (!res.ok) throw new Error(`em http ${res.status}`);
+    const parsed = parseEmQuote(await res.json(), now);
+    if (!parsed) throw new Error('em quote parse failed');
+    const values = [...(cached?.values ?? [])];
+    const lastDate = values[values.length - 1]?.date;
+    if (lastDate === parsed.asOf) values[values.length - 1] = { date: parsed.asOf, value: parsed.value };
+    else values.push({ date: parsed.asOf, value: parsed.value });
+    const entry = { values: values.slice(-60), value: parsed.value, asOf: parsed.asOf, fetchedAt: now() };
     db.putState(key, entry);
     return entry;
   } catch (e) {
-    // Record the failure for observability (status.factors shows `error`),
-    // but keep fetchedAt at 0 so the NEXT cycle retries instead of waiting 26h.
     const entry = {
       values: cached?.values ?? [],
       asOf: cached?.asOf ?? null,
       fetchedAt: 0,
       error: String(e?.message ?? e).slice(0, 160),
-      errorMs: Date.now() - started, // how long the attempt took (diagnosis)
+      errorMs: Date.now() - started,
       errorAt: new Date(started).toISOString(),
     };
     try { db.putState(key, entry); } catch { /* best effort */ }
@@ -113,10 +114,11 @@ async function getFredSeries(fetchFn, db, id, now) {
 async function getUsdIndex(fetchFn, db, now) {
   const key = 'factor:usdIndex';
   const cached = db.getState(key);
-  if (cached && now() - (cached.fetchedAt ?? 0) < FRED_MAX_AGE) return cached;
+  if (cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE) return cached;
+  const started = Date.now();
   try {
     const res = await fetchFn('https://open.er-api.com/v6/latest/USD', {
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(30_000),
       headers: { 'user-agent': 'Mozilla/5.0' },
     });
     if (!res.ok) throw new Error(`fx http ${res.status}`);
@@ -131,24 +133,31 @@ async function getUsdIndex(fetchFn, db, now) {
     const entry = { values: values.slice(-60), value, asOf, fetchedAt: now() };
     db.putState(key, entry);
     return entry;
-  } catch {
-    return cached ?? null;
+  } catch (e) {
+    const entry = {
+      values: cached?.values ?? [],
+      asOf: cached?.asOf ?? null,
+      fetchedAt: 0,
+      error: String(e?.message ?? e).slice(0, 160),
+      errorMs: Date.now() - started,
+      errorAt: new Date(started).toISOString(),
+    };
+    try { db.putState(key, entry); } catch { /* best effort */ }
+    return cached ?? entry;
   }
 }
 
 /**
  * Collect all macro factors for one cycle (network, staleness-gated).
- * Returns {realYield, inflationExp, usdIndex} each {value, asOf, delta5d, stale}|null.
+ * Returns {realYield, usdIndex} each {value, asOf, delta5d, stale}|null.
  */
 export async function collectFactors(fetchFn, db, now = () => Date.now()) {
-  const [ry, ie, usd] = await Promise.all([
-    getFredSeries(fetchFn, db, 'DFII10', now).catch(() => null),
-    getFredSeries(fetchFn, db, 'T10YIE', now).catch(() => null),
+  const [ry, usd] = await Promise.all([
+    getEmFactor(fetchFn, db, { key: 'factor:em:UI10Y', secid: '171.UI10Y' }, now).catch(() => null),
     getUsdIndex(fetchFn, db, now).catch(() => null),
   ]);
   return {
     realYield: withDelta(ry, now, 'pp'),
-    inflationExp: withDelta(ie, now, 'pp'),
     usdIndex: withDelta(usd, now, 'pct'),
   };
 }

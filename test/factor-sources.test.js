@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../lib/db.js';
 import {
-  parseFredCsv, computeDxy, collectFactors, readFactors, peFromQuote,
+  parseEmQuote, computeDxy, collectFactors, readFactors, peFromQuote,
 } from '../core/factor-sources.js';
 
 const DAY = 86_400_000;
@@ -16,19 +16,17 @@ function harness(t) {
   return db;
 }
 
-test('parseFredCsv reads dates/values and skips missing observations', () => {
-  const csv = 'observation_date,DFII10\n2026-11-06,2.05\n2026-11-07,.\n2026-11-08,1.97\n';
-  const v = parseFredCsv(csv);
-  assert.deepEqual(v, [
-    { date: '2026-11-06', value: 2.05 },
-    { date: '2026-11-08', value: 1.97 },
-  ]);
-  assert.equal(parseFredCsv('').length, 0);
-  assert.equal(parseFredCsv('garbage').length, 0);
+test('parseEmQuote scales f43 by 1000 and reads the quote date', () => {
+  const now = () => Date.parse('2026-11-09T12:00:00Z');
+  const p = parseEmQuote({ data: { f43: 26190, f86: 1794231430, f58: '美国10年期通胀国债收益率' } }, now);
+  assert.ok(Math.abs(p.value - 2.619) < 1e-9, `value 2.619, got ${p.value}`);
+  assert.equal(p.asOf, '2026-11-09', 'Shanghai date of the quote');
+  assert.equal(p.name, '美国10年期通胀国债收益率');
+  assert.equal(parseEmQuote({ data: { f86: 1 } }, now), null, 'missing f43 → null');
+  assert.equal(parseEmQuote(null, now), null);
 });
 
 test('computeDxy matches the standard formula on a known rate vector', () => {
-  // Rates in er-api shape (per-USD): EUR .85, JPY 150, GBP .75, CAD 1.37, SEK 10.7, CHF .88
   const rates = { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 };
   const expected = 50.14348112
     * Math.pow(1 / 0.85, 0.576)
@@ -43,45 +41,44 @@ test('computeDxy matches the standard formula on a known rate vector', () => {
   assert.equal(computeDxy({ EUR: 0.85 }), null, 'missing rates → null');
 });
 
-test('FRED fetch caches for 26h and failures fall back to the cache', async (t) => {
+test('factor fetch caches for 26h and failures fall back to the cache', async (t) => {
   const db = harness(t);
   let clock = Date.UTC(2026, 10, 9, 4, 0);
   const now = () => clock;
   let calls = 0;
   let fail = false;
-  const csv = 'observation_date,DFII10\n2026-11-06,2.05\n2026-11-07,1.97\n';
   const fetchFn = async (url) => {
     calls += 1;
     if (fail) throw new Error('network down');
-    if (String(url).includes('er-api')) {
-      return { ok: true, json: async () => ({ rates: { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 } }) };
+    if (String(url).includes('push2.eastmoney.com')) {
+      return { ok: true, json: async () => ({ data: { f43: 26190, f86: Math.floor(clock / 1000) } }) };
     }
-    return { ok: true, text: async () => csv };
+    return { ok: true, json: async () => ({ rates: { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 } }) };
   };
   const first = await collectFactors(fetchFn, db, now);
   const callsAfterFirst = calls;
   assert.ok(calls >= 1, 'initial fetch happened');
-  assert.ok(Math.abs(first.realYield.value - 1.97) < 1e-9, 'latest observation');
+  assert.ok(Math.abs(first.realYield.value - 2.619) < 1e-9, 'scaled value');
   assert.equal(first.realYield.stale, false, 'fresh data');
-  assert.ok(Number.isFinite(first.realYield.delta5d), 'delta derived from history');
+  assert.equal(first.realYield.delta5d, null, 'needs ≥2 observations');
 
   // Second collect within 26h: no refetch.
   await collectFactors(fetchFn, db, now);
   assert.equal(calls, callsAfterFirst, 'fresh cache skips refetch');
 
-  // Beyond 26h (6 days) the network fails → cache survives; asOf is now
-  // more than 5 days old → stale flag set.
+  // Beyond 26h the network fails → cache survives; asOf is now more than
+  // 5 days old → stale flag set, error diagnostics recorded.
   clock += 6 * DAY;
   fail = true;
   const degraded = await collectFactors(fetchFn, db, now);
   assert.ok(degraded.realYield, 'cache used on failure');
-  assert.equal(degraded.realYield.value, 1.97, 'values preserved');
+  assert.equal(degraded.realYield.value, 2.619, 'values preserved');
   assert.ok(degraded.realYield.stale, 'older than 5 days → stale');
 });
 
-test('factors older than 5 days are marked stale (signal will neutralize)', async (t) => {
+test('factors older than 5 days are marked stale (signal will neutralize)', (t) => {
   const db = harness(t);
-  db.putState('factor:fred:DFII10', {
+  db.putState('factor:em:UI10Y', {
     values: [{ date: '2026-10-01', value: 2.2 }, { date: '2026-10-02', value: 2.1 }],
     asOf: '2026-10-02', fetchedAt: Date.now(),
   });
@@ -93,7 +90,7 @@ test('factors older than 5 days are marked stale (signal will neutralize)', asyn
 
 test('readFactors derives delta5d in percentage points and percent', (t) => {
   const db = harness(t);
-  db.putState('factor:fred:DFII10', {
+  db.putState('factor:em:UI10Y', {
     values: [
       { date: '2026-11-01', value: 2.20 },
       { date: '2026-11-08', value: 2.05 }, // −15bp over 7 days
@@ -110,6 +107,7 @@ test('readFactors derives delta5d in percentage points and percent', (t) => {
   const f = readFactors(db, () => Date.parse('2026-11-09T00:00:00Z'));
   assert.ok(Math.abs(f.realYield.delta5d - (-0.15)) < 1e-9, 'pp difference');
   assert.ok(Math.abs(f.usdIndex.delta5d - (-1)) < 1e-9, 'percent change');
+  assert.equal(f.inflationExp, undefined, 'dropped: no free source');
 });
 
 test('peFromQuote reads field 39 across markets', () => {

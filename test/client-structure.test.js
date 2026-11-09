@@ -179,7 +179,6 @@ test('macro factor summary renders with values and data dates', async () => {
     factors: {
       realYield: { value: 2.05, delta5d: -0.08, asOf: '2026-11-06', stale: false },
       usdIndex: { value: 99.12, delta5d: -0.4, asOf: '2026-11-09', stale: false },
-      inflationExp: { value: 2.31, asOf: '2026-11-06', stale: false },
     },
   };
   const api = await loadClient(state);
@@ -188,7 +187,6 @@ test('macro factor summary renders with values and data dates', async () => {
   assert.ok(text.includes('实际收益率 2.05%'), 'real yield value');
   assert.ok(text.includes('-8bp'), '5-day change in bp');
   assert.ok(text.includes('美元指数 99.12'), 'usd index value');
-  assert.ok(text.includes('10Y通胀预期 2.31%'), 'inflation expectation');
   assert.ok(!text.includes('【过期】'), 'fresh data not flagged');
 });
 
