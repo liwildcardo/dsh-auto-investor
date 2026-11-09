@@ -79,7 +79,10 @@ async function getFredSeries(fetchFn, db, id, now) {
   const cached = db.getState(key);
   if (cached && now() - (cached.fetchedAt ?? 0) < FRED_MAX_AGE) return cached;
   try {
-    const res = await fetchFn(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}`, {
+    // cosd limits the CSV range (~60 days ≈ 784 bytes vs the full 99KB):
+    // a tiny payload survives slow paths that the full history could not.
+    const cosd = new Date(now() - 60 * DAY + 8 * 3600_000).toISOString().slice(0, 10);
+    const res = await fetchFn(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}&cosd=${cosd}`, {
       signal: AbortSignal.timeout(30_000), // host-process fetch can be slower; never blocks (background)
       headers: { 'user-agent': 'Mozilla/5.0' },
     });
