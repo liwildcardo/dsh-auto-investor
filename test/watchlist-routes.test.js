@@ -136,6 +136,15 @@ test('trades carry the symbol name from the pool', async (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-wlt-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
   const product = loadProducts({ enabled: ['hk'] })[0];
+  // Candidate bars: ascending with ~±3% daily swings (σ well above the HK 0.6%
+  // floor), ending near the quoted 105 so trend + momentum both fire.
+  for (let i = 0; i < 25; i += 1) {
+    db.insertPoint({
+      ts: Date.UTC(2026, 10, 2, 7, 0) - (25 - i) * 86_400_000,
+      product: 'hk', symbol: 'hk09988',
+      price: 80 + i * 1.2 + (i % 3) * 1.5,
+    });
+  }
   const fetchFn = async (url) => {
     const u = String(url);
     if (u.includes('qt.gtimg.cn')) {

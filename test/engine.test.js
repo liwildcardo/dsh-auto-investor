@@ -10,6 +10,21 @@ import { createProductEngine } from '../core/engine.js';
 // 2026-11-06 Friday 10:00 Shanghai
 const OPEN = Date.UTC(2026, 10, 6, 2, 0);
 const LUNCH = Date.UTC(2026, 10, 6, 4, 0);
+const DAY = 86_400_000;
+
+/**
+ * Ascending daily signal bars ending at the live quote (10): the trend signal
+ * then scores +2, the entry gate sees a candidate, and buys are executable.
+ */
+function seedTrend(db, { product, symbol, count = 25, endPrice = 10, step = 0.01 }) {
+  for (let i = 0; i < count; i += 1) {
+    db.insertPoint({
+      ts: OPEN - (count - i) * DAY,
+      product, symbol,
+      price: endPrice - (count - 1 - i) * step,
+    });
+  }
+}
 
 function makeProduct(overrides = {}) {
   const state = { price: 10, prevClose: 10, volume: 100 };
@@ -63,6 +78,8 @@ function makeEngine(t, { llm, clock = () => OPEN, settlement, rules } = {}) {
   const db = openDb(join(dir, 'x.db'), { backend: 'json' });
   t.after(() => db.close());
   const { product, state } = makeProduct({ settlement, rules });
+  seedTrend(db, { product: product.id, symbol: 'x' });
+  seedTrend(db, { product: product.id, symbol: 'y' });
   const engine = createProductEngine({
     db, product, fetchFn: async () => ({ ok: true }),
     llm: llm ?? (async () => JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 })),
@@ -211,10 +228,20 @@ test('single product keys day-open by the position symbol (today pnl non-zero)',
     },
     universe: { watchlist: () => [{ symbol: 'AU9999', name: '黄金', lot: 1 }], lotSize: 1 },
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
-    strategy: { indicators: [], signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, plan: {}, prompt: {}, decision: {}, evolvable: [] },
+    strategy: {
+      indicators: [], signals: [{ id: 'trend', params: { fast: 2, slow: 3 } }],
+      candidates: { threshold: 0.8 }, plan: {}, prompt: {}, decision: {}, evolvable: [],
+    },
     rules: { unit: 'gram', lotSize: 1, settlement: 'T+0', fees: {}, sessions: [[550, 1560]], holidays: [] },
     risk: { perTrade: 5000, perSymbolPct: 100, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50, dailyLossPct: -99 },
   });
+  // Prior-day ticks: ascending trend so the entry gate has a candidate; kept
+  // off TODAY so the day-open baseline stays the 10:00 session tick.
+  for (let k = 5; k >= 1; k -= 1) {
+    const ts = OPEN - k * DAY;
+    const p = 885 - k;
+    db.insertTick({ ts, mid: p, price: p, buy: p, sell: p, product: 'goldx' });
+  }
   let llmOut = JSON.stringify({ action: 'buy', symbol: 'AU9999', amount: 5000, confidence: 0.9 });
   const engine = createProductEngine({
     db, product, fetchFn: async () => ({ ok: true }),
@@ -335,6 +362,7 @@ test('total-drawdown circuit breaker blocks new trades', async (t) => {
     risk: { perTrade: 60000, perSymbolPct: 100, circuitBreakerPct: -10, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50 },
   });
   let llmOut = JSON.stringify({ action: 'buy', symbol: 'x', amount: 50000, confidence: 0.9 });
+  seedTrend(db, { product: 'brk', symbol: 'x' }); // candidate bars for the first entry
   const engine = createProductEngine({
     db, product, fetchFn: async () => ({ ok: true }),
     llm: async () => llmOut, now: () => OPEN,

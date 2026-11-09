@@ -16,6 +16,10 @@ const DEFAULTS = {
     prompt: {},
     decision: { actions: ['buy', 'sell', 'hold'], shape: 'symbol+shares' },
     evolvable: [],
+    // Signal bar interval: '1d' groups points by market-local date (daily
+    // bars + intraday ticks merge naturally), '1h' buckets hourly and keeps
+    // only in-session points (used where daily history is unavailable).
+    barInterval: '1d',
     // Default frequency plan: the engine falls back to this whenever a version
     // has no plan (forks before plan-preservation existed, migrations).
     plan: { style: 'swing', maxTradesPerDay: 2, minIntervalHours: 4, maxPositionPct: 60 },

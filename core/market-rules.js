@@ -4,11 +4,18 @@
  */
 
 /** Wall-clock parts in a product's market timezone (handles US DST correctly). */
+// Intl formatters are expensive to build — cache one per time zone.
+const FORMATTERS = new Map();
+
 export function zonedParts(ts, timeZone) {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, weekday: 'short',
-  });
+  let fmt = FORMATTERS.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, weekday: 'short',
+    });
+    FORMATTERS.set(timeZone, fmt);
+  }
   const p = Object.fromEntries(fmt.formatToParts(new Date(ts)).map(x => [x.type, x.value]));
   const hour = p.hour === '24' ? '00' : p.hour;
   return {

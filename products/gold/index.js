@@ -45,6 +45,7 @@ export default {
   },
 
   strategy: {
+    barInterval: '1h', // no daily history source; hourly session bars from live ticks
     indicators: [
       { id: 'ma', params: { period: 20 } },
       { id: 'rsi', params: { period: 14 } },
@@ -84,6 +85,7 @@ export default {
   risk: {
     perTrade: 5000,
     perSymbolPct: 100,
+    minVolatility: 0.0004, // hourly σ floor: no entries in dead markets
     dailyLossPct: -2,
     stopLossPct: -3,
     takeProfitPct: 6,

@@ -46,6 +46,7 @@ export default {
   },
 
   strategy: {
+    barInterval: '1h', // Tencent has no US daily history; session-hour bars from live ticks
     indicators: [
       { id: 'ma', params: { period: 20 } },
       { id: 'rsi', params: { period: 14 } },
@@ -89,6 +90,7 @@ export default {
   risk: {
     perTrade: 2000,
     perSymbolPct: 25,
+    minVolatility: 0.001, // hourly σ floor
     dailyLossPct: -2.5,
     stopLossPct: -6,
     takeProfitPct: 12,

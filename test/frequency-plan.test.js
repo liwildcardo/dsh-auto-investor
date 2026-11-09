@@ -53,6 +53,11 @@ function engineFor(t, { plan, llm, clock = () => OPEN, extra = {}, seedVersion =
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-freq-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
   if (seedVersion) db.putState(`product:${product.id}:versions`, [seedVersion]);
+  // Candidate bars: ascending daily series ending at the quote so entries pass
+  // the "must be a candidate" gate (the tests exercise frequency, not signals).
+  for (let i = 0; i < 25; i += 1) {
+    db.insertPoint({ ts: OPEN - (25 - i) * 86_400_000, product: product.id, symbol: 'x', price: 10 - (24 - i) * 0.01 });
+  }
   const engine = createProductEngine({
     db, product, fetchFn: async () => ({ ok: true }),
     llm: llm ?? (async () => JSON.stringify({ action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 })),

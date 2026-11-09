@@ -48,6 +48,7 @@ export default {
   },
 
   strategy: {
+    barInterval: '1d',
     indicators: [
       { id: 'ma', params: { period: 20 } },
       { id: 'rsi', params: { period: 14 } },
@@ -97,6 +98,7 @@ export default {
   risk: {
     perTrade: 15000,
     perSymbolPct: 25,
+    minVolatility: 0.006, // daily σ floor
     dailyLossPct: -2.5,
     stopLossPct: -6,
     takeProfitPct: 12,

@@ -4,7 +4,7 @@
  * 引擎不含任何产品专有常量，全部来自产品契约。
  */
 import { createAccount, applyBuy, applySell, snapshotOf, positionOf } from './account.js';
-import { evaluateSignals, compositeScore, pickCandidates } from './signals.js';
+import { evaluateSignals, compositeScore, pickCandidates, volatility } from './signals.js';
 import { isSessionOpen, roundLot, tradeFees, earliestSellTs, withinPriceBand } from './market-rules.js';
 import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
@@ -107,7 +107,7 @@ export function createProductEngine({
   async function seedHistory() {
     if (product.market.kind !== 'multi') return;
     for (const w of pool().slice(0, 20)) {
-      if (seriesFor(w.symbol).length >= 30) continue; // enough bars already
+      if (barsFor(w.symbol).length >= 30) continue; // enough signal bars already
       const key = pkey(`seeded:${w.symbol}`);
       const seededAt = db.getState(key) ?? 0;
       if (now() - seededAt < 30 * 60_000) continue; // retry at most every 30 min
@@ -242,6 +242,36 @@ export function createProductEngine({
       .filter(Number.isFinite);
   }
 
+  /**
+   * Signal bars resampled to the strategy's horizon so MA/ROC/RSI have a
+   * consistent time meaning (raw ticks made MA20 ≈ 20 minutes, not 20 days):
+   *  - '1d': one bar per market-local date (daily history + intraday ticks
+   *    merge into the same calendar-day bucket; last price wins).
+   *  - '1h': hourly buckets from in-session points only (closed-hours quotes
+   *    are static and would flatten volatility and moving averages).
+   * Rows arrive ascending, so later points overwrite the bucket close.
+   */
+  function barsFor(symbol, interval = cfg.strategy?.barInterval ?? '1d', count = 240) {
+    const intraday = interval === '1h';
+    const cutoff = now() - 400 * 86_400_000;
+    const rows = product.market.kind === 'single'
+      ? db.latestTicksByProduct(product.id, 5000)
+      : db.listPoints(product.id, symbol, 5000);
+    const buckets = new Map();
+    for (const r of rows) {
+      if (!Number.isFinite(r.ts) || r.ts < cutoff || !Number.isFinite(r.price)) continue;
+      if (intraday && !isSessionOpen(cfg.rules, r.ts, cfg.timezone)) continue;
+      const key = intraday ? Math.floor(r.ts / 3_600_000) : zonedParts(r.ts, cfg.timezone).date;
+      buckets.set(key, r.price);
+    }
+    return [...buckets.keys()].sort().slice(-count).map(k => buckets.get(k));
+  }
+
+  /** Realized volatility of the signal bars (stdev of returns). */
+  function barVolatility(symbol) {
+    return volatility(barsFor(symbol), 20);
+  }
+
   function volumesFor(symbol, limit = DEFAULT_SERIES) {
     if (product.market.kind === 'single') return [];
     return db.listPoints(product.id, symbol, limit).map(p => p.volume).filter(Number.isFinite);
@@ -250,7 +280,7 @@ export function createProductEngine({
   /* ------------------------------ evaluation ------------------------------- */
 
   function evaluateSymbol(symbol, news = []) {
-    const series = seriesFor(symbol);
+    const series = barsFor(symbol);
     const signals = evaluateSignals(activeSignals(), {
       series, volumes: volumesFor(symbol), news,
     });
@@ -304,6 +334,7 @@ export function createProductEngine({
       ...(p.constraints ?? []).map(c => `- 约束：${c}`),
       '',
       '只输出 JSON：{"action":"buy|sell|hold","symbol":"...","amount":金额或null,"qty":数量或null,"reason":"...","confidence":0~1,"plan":{...}}',
+      '约束：买入的 symbol 必须是下方「候选」中列出的标的，或已有持仓的标的；候选为空时只能 hold。',
     ];
     return lines.join('\n');
   }
@@ -392,7 +423,7 @@ export function createProductEngine({
     return roundLot(cfg.rules, raw, symbol); // lot discipline applies to explicit qty too
   }
 
-  function execute(decision) {
+  function execute(decision, picked = null) {
     const symbol = decision.symbol ?? (product.market.kind === 'single' ? (pool()[0]?.symbol ?? product.id) : null);
     if (!symbol) return { ok: false, reason: '缺目标标的' };
     const risk = effectiveRisk();
@@ -419,6 +450,19 @@ export function createProductEngine({
       if (buysToday.length >= maxPerDay) return { ok: false, reason: `已达每日交易上限(${maxPerDay})` };
       const lastBuy = buysToday[0];
       if (lastBuy && now() - lastBuy.ts < minGap) return { ok: false, reason: '未达最小交易间隔' };
+      // Rule-engine discipline: an entry must be a current candidate or an
+      // existing holding — the LLM arbitrates setups, it cannot invent them.
+      if (Array.isArray(picked) && !picked.some(c => c.symbol === symbol) && !positionOf(account, symbol)) {
+        return { ok: false, reason: '标的不在候选或持仓中' };
+      }
+      // Volatility gate: refuse new entries in dead markets (exits pass).
+      const minVol = risk.minVolatility;
+      if (Number.isFinite(minVol)) {
+        const vol = barVolatility(symbol);
+        if (vol != null && vol < minVol) {
+          return { ok: false, reason: `低波动率过滤(σ ${(vol * 100).toFixed(3)}% < ${(minVol * 100).toFixed(3)}%)` };
+        }
+      }
       const qty = buyQuantity(decision, symbol, price);
       if (!(qty > 0)) return { ok: false, reason: '数量不足一手' };
       const notional = qty * price;
@@ -511,11 +555,19 @@ export function createProductEngine({
     let llmError = null;
     let rejection = null;
     let trades = [];
+    let pickedForExec = null;   // candidates the entry must belong to (B3)
+    let signalsSnapshot = null; // what the model saw, journaled for review (C3)
 
     if (risk.kind !== 'none') {
       decision = { action: 'sell', symbol: risk.symbol, reason: `风控触发：${risk.kind} ${risk.pct.toFixed(2)}%`, confidence: 1 };
     } else {
       const { scored, picked } = candidates(news);
+      pickedForExec = picked;
+      signalsSnapshot = scored.map(s => ({
+        symbol: s.symbol,
+        score: s.score,
+        signals: (s.signals ?? []).map(x => ({ id: x.id, score: x.score })),
+      }));
       const ctx = {
         market: { price: quote, ts: quoteTs, currency: cfg.currency },
         positions: snapshotOf(account, priceOf).positions,
@@ -539,15 +591,20 @@ export function createProductEngine({
     }
 
     if (decision.action !== 'hold') {
-      const r = execute(decision);
+      const r = execute(decision, pickedForExec);
       if (r.ok) trades = [r];
       else rejection = r.reason;
     }
     if (lastIngest) lastIngest = { ...lastIngest };
     lastRun = { decision, trades, rejection, llmError };
-    // Persist decisions so reflection after a restart still sees what was done.
+    // Persist decisions so reflection after a restart still sees what was done,
+    // including the signal scores the model based its choice on (C3).
     const journal = db.getState(pkey('decisions')) ?? [];
-    journal.push({ ts: now(), decision, trades, rejection, llmError });
+    journal.push({
+      ts: now(), decision, trades, rejection, llmError,
+      signals: signalsSnapshot,
+      picked: (pickedForExec ?? []).map(p => p.symbol),
+    });
     db.putState(pkey('decisions'), journal.slice(-50));
     persist();
     return jsonSafe({ decision, trades, rejection, llmError, paused, quoteTs, ingest: lastIngest });
@@ -695,7 +752,11 @@ export function createProductEngine({
   }
 
   function buildReflectPrompt(stats) {
-    const lastDecision = (db.getState(pkey('decisions')) ?? []).at(-1)?.decision ?? lastRun?.decision ?? null;
+    const journal = db.getState(pkey('decisions')) ?? [];
+    const last = journal.at(-1);
+    const lastEntry = last
+      ? { decision: last.decision, rejection: last.rejection, picked: last.picked, signals: last.signals }
+      : { decision: lastRun?.decision ?? null };
     return [
       `你是${cfg.name}策略复盘引擎。请检讨当前策略版本的表现并给出改进。`,
       '',
@@ -705,8 +766,8 @@ export function createProductEngine({
       '## 版本表现',
       JSON.stringify(stats, null, 2),
       '',
-      '## 最近决策',
-      JSON.stringify(lastDecision, null, 2),
+      '## 最近决策（含当时的信号评分）',
+      JSON.stringify(lastEntry, null, 2),
       '',
       '## 可调整参数（只能改这些路径，且受上下界约束）',
       ...(cfg.strategy.evolvable ?? []).map(w => `- ${w.path} ∈ [${w.min}, ${w.max}] step ${w.step}`),
@@ -788,6 +849,8 @@ export function createProductEngine({
     watchlist: () => pool(),
     watchlistAction,
     listNews: (limit) => (typeof newsList === 'function' ? newsList(limit) : []),
+    /** Signal bars for tests/backtest: resampled to the product's horizon. */
+    signalBars: (symbol, interval) => barsFor(symbol, interval),
     get quote() { return quote; },
     get account() { return account; },
     snapshot: () => snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null),
