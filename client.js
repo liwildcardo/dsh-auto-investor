@@ -464,6 +464,20 @@ window.__ModuleLoader__.load({
           `折人民币按汇率 ${fmt(fx, 4)} 估算（每 30 分钟刷新）。`)
         : null;
 
+      // Buy-and-hold benchmark: did the strategy actually add value?
+      const bench = state.benchmark;
+      const benchNote = bench && bench.returnPct != null
+        ? (() => {
+          const initial = snap.totalValue - snap.totalPnl || 1;
+          const stratPct = (snap.totalPnl / initial) * 100;
+          const better = stratPct >= bench.returnPct;
+          return h('div', { className: 'ai-note' },
+            `买入持有基准：${bench.symbol} 自首笔成交 ${fmt(bench.price)} 起 ${bench.returnPct >= 0 ? '+' : ''}${fmt(bench.returnPct)}%`
+            + `　vs 策略 ${snap.totalPnl >= 0 ? '+' : ''}${fmt(snap.totalPnl)}（${stratPct >= 0 ? '+' : ''}${fmt(stratPct)}%）`
+            + (better ? '　✅ 跑赢基准' : '　⚠️ 落后基准'));
+        })()
+        : null;
+
       const watchlist = state.watchlist ?? [];
       const nameOf = new Map(watchlist.map(w => [w.symbol, w.name]));
       const isMulti = p.kind === 'multi';
@@ -557,6 +571,7 @@ window.__ModuleLoader__.load({
         header,
         kpis,
         fxNote,
+        benchNote,
         watchlistCard,
 
         h('div', { className: 'ai-grid' },

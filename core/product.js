@@ -45,6 +45,10 @@ const DEFAULTS = {
     circuitBreakerPct: -15, // total drawdown from the initial capital stops new trades
     stopLossPct: -3,
     takeProfitPct: 6,
+    minVolatility: undefined, // per-bar σ floor for entries (products set their own)
+    // Parameter evolution needs real samples; below this only the critique is
+    // recorded (no version fork for tuning, loss-triggered forks still work).
+    minSamplesToEvolve: 5,
   },
 };
 

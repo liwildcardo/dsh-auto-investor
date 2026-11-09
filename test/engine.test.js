@@ -68,7 +68,7 @@ function makeProduct(overrides = {}) {
       sessions: [[570, 690], [780, 900]], holidays: [],
       ...(overrides.rules ?? {}),
     },
-    risk: { perTrade: 10000, perSymbolPct: 25, dailyLossPct: -50, stopLossPct: -5, takeProfitPct: 10, minConfidence: 0.55 },
+    risk: { perTrade: 10000, perSymbolPct: 25, dailyLossPct: -50, stopLossPct: -5, takeProfitPct: 10, minConfidence: 0.55, minSamplesToEvolve: 0 },
   });
   return { product, state };
 }

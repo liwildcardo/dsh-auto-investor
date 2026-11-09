@@ -41,7 +41,7 @@ function makeProduct(plan, extra = {}) {
         sessions: [[570, 690], [780, 900]], holidays: [],
         ...extra.rules,
       },
-      risk: { perTrade: 10000, perSymbolPct: 100, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50, dailyLossPct: -99 },
+      risk: { perTrade: 10000, perSymbolPct: 100, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50, dailyLossPct: -99, minSamplesToEvolve: 0 },
       ...extra.top,
     }),
     state,

@@ -479,6 +479,11 @@ export function createProductEngine({
       if (notional + fee > account.cash + 1e-9) return { ok: false, reason: '现金不足' };
       applyBuy(account, { symbol, qty, price, fee, ts: now(), earliestSellTs: earliestSellTs(now(), cfg.rules, cfg.timezone) });
       db.insertTrade({ ts: now(), side: 'buy', grams: cfg.rules.unit === 'gram' ? qty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol, name: poolNames().get(symbol) ?? '' });
+      // Buy-and-hold benchmark: seeded at the first fill so the strategy is
+      // always judged against simply holding from the same entry.
+      if (!db.getState(pkey('benchmark'))) {
+        db.putState(pkey('benchmark'), { symbol, price, ts: now() });
+      }
       return { ok: true, side: 'buy', symbol, name: poolNames().get(symbol) ?? '', qty, price, fee, notional, reason: decision.reason };
     }
 
@@ -612,6 +617,20 @@ export function createProductEngine({
 
   /* -------------------------------- status --------------------------------- */
 
+  /** Buy-and-hold benchmark view: first-fill price vs the current price. */
+  function benchmarkView() {
+    const b = db.getState(pkey('benchmark'));
+    if (!b || !Number.isFinite(b.price) || b.price <= 0) return null;
+    const price = priceOf(b.symbol);
+    const returnPct = Number.isFinite(price) ? ((price - b.price) / b.price) * 100 : null;
+    return {
+      symbol: b.symbol,
+      price: b.price,
+      ts: b.ts,
+      returnPct: returnPct == null ? null : Math.round(returnPct * 100) / 100,
+    };
+  }
+
   function status(symbol) {
     const snap = snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null);
     // Chart target: an explicit symbol from the pool, else the pool's first.
@@ -636,6 +655,7 @@ export function createProductEngine({
       reflections: db.getState(pkey('reflections')) ?? [],
       series,
       chartSymbol: watchSymbol,
+      benchmark: benchmarkView(),
       watchlist: pool(),
       fx: cfg.currency === 'CNY' ? null : fxRate,
       ingest: lastIngest,
@@ -678,6 +698,7 @@ export function createProductEngine({
       maxDrawdownPct: Math.round((maxDrawdown / (account.initial || 1)) * 10000) / 100,
       holdingPnl: Math.round(snap.holdingPnl * 100) / 100,
       positions: snap.positions.length,
+      benchmarkReturnPct: benchmarkView()?.returnPct ?? null,
     };
   }
 
@@ -802,7 +823,10 @@ export function createProductEngine({
     if (!next.strategy.risk || Object.keys(next.strategy.risk).length === 0) {
       next.strategy.risk = { ...(cfg.risk ?? {}) };
     }
-    const applied = applyParams(next.strategy, params);
+    // Anti-overfit: tuning needs a real trade sample. Below the floor only the
+    // critique is recorded — loss-triggered forks still happen, untuned.
+    const canEvolve = stats.fills >= (effectiveRisk().minSamplesToEvolve ?? 5);
+    const applied = canEvolve ? applyParams(next.strategy, params) : {};
     const changed = Object.keys(applied).length > 0;
     const journal = db.getState(pkey('reflections')) ?? [];
     journal.push({
