@@ -132,3 +132,23 @@ test('normalizeVersions backfills a missing plan from the product default', asyn
   assert.equal(v.strategy.plan?.maxTradesPerDay, 2, 'product default plan restored');
   assert.equal(v.strategy.plan?.minIntervalHours, 4);
 });
+
+test('the active version adopts signals added to the product contract later', (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-sigadd-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  // Versions predate the contract's current signal set (only have trend).
+  db.putState('product:freq:versions', [
+    { id: 1, createdAt: 1, strategy: { signals: [{ id: 'trend' }], risk: {}, plan: { maxTradesPerDay: 2, minIntervalHours: 4 } }, startPnl: 0, retired: true },
+    { id: 2, createdAt: 2, strategy: { signals: [{ id: 'trend' }], risk: {}, plan: { maxTradesPerDay: 2, minIntervalHours: 4 } }, startPnl: 0, retired: false },
+  ]);
+  const { product } = makeProduct(undefined);
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }), llm: async () => '{}', now: () => OPEN,
+  });
+  const versions = engine.status().versions;
+  const ids = versions[versions.length - 1].strategy.signals.map(s => s.id);
+  assert.ok(ids.includes('trend'), 'existing signal kept');
+  assert.ok(ids.includes('momentum') && ids.includes('rsi'), 'contract signals adopted by the active version');
+  const retiredIds = versions[0].strategy.signals.map(s => s.id);
+  assert.deepEqual(retiredIds, ['trend'], 'retired versions keep the list they ran with');
+});
