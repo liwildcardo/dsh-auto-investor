@@ -11,6 +11,7 @@ import { jsonSafe } from '../lib/json.js';
 import { fetchDailyHistory, fetchMinuteHistory, fetchFxRate } from './quotes.js';
 import { loadWatchlist, addToWatchlist, removeFromWatchlist, resetWatchlist } from './watchlist.js';
 import { runBacktest as runBacktestCore } from './backtest.js';
+import { collectFactors, readFactors } from './factor-sources.js';
 
 const DEFAULT_SERIES = 240;
 
@@ -31,6 +32,9 @@ export function createProductEngine({
   let lastRun = null;
   let lastReflectAt = db.getState(pkey('lastReflectAt')) ?? now();
   let fxRate = db.getState(pkey('fx')) ?? null; // {rate, ts} for non-CNY products
+  // Macro factor snapshot (real yield / USD / inflation expectations): read
+  // from cache here, refreshed once per cycle behind the 26h staleness gate.
+  let factors = readFactors(db);
 
   const current = () => versions[versions.length - 1];
   // Version-evolved risk wins over the product defaults (whitelisted + clamped).
@@ -164,7 +168,7 @@ export function createProductEngine({
       for (const q of raw.quotes) {
         db.insertPoint({
           ts: quoteTs, product: product.id, symbol: q.symbol,
-          price: q.price, open: q.open, volume: q.volume,
+          price: q.price, open: q.open, volume: q.volume, pe: q.pe ?? null,
         });
       }
       if (sessionOpen) recordDayOpen(Object.fromEntries(raw.quotes.map(q => [q.symbol, q.price])));
@@ -299,10 +303,30 @@ export function createProductEngine({
   function evaluateSymbol(symbol, news = []) {
     const series = barsFor(symbol);
     const signals = evaluateSignals(activeSignals(), {
-      series, volumes: volumesFor(symbol), news,
+      series,
+      volumes: volumesFor(symbol),
+      news,
+      // Macro factors are product-level; PE percentile is pool cross-sectional.
+      realYield: factors?.realYield ?? null,
+      usdIndex: factors?.usdIndex ?? null,
+      pePercentile: pePercentileOf(symbol),
     });
     const score = compositeScore(signals);
     return { symbol, score, signals, price: priceOf(symbol) };
+  }
+
+  /** Cross-sectional PE percentile within the pool (1 = cheapest in pool). */
+  function pePercentileOf(symbol) {
+    if (product.market.kind === 'single') return null;
+    const pes = pool()
+      .map(w => quote?.[w.symbol]?.pe)
+      .filter(p => Number.isFinite(p) && p > 0)
+      .sort((a, b) => a - b);
+    const pe = quote?.[symbol]?.pe;
+    if (!Number.isFinite(pe) || pe <= 0) return null;
+    if (pes.length < 2) return 0.5; // single-name pool → neutral (spec §9)
+    const below = pes.filter(x => x < pe).length;
+    return Math.round((below / (pes.length - 1)) * 100) / 100;
   }
 
   function candidates(news) {
@@ -314,6 +338,32 @@ export function createProductEngine({
   }
 
   /* ------------------------------- decisions ------------------------------- */
+
+  /** Human-readable macro factor block (spec §5.3) with staleness markers. */
+  function factorLines(ctx) {
+    const f = ctx.factors ?? {};
+    const mark = (x) => (x?.stale ? '【已过期】' : '');
+    const fmtDelta = (d, kind) => {
+      if (!Number.isFinite(d)) return '—';
+      return kind === 'bp'
+        ? `${d >= 0 ? '+' : ''}${Math.round(d * 100)}bp`
+        : `${d >= 0 ? '+' : ''}${d.toFixed(2)}%`;
+    };
+    const ry = f.realYield;
+    const usd = f.usdIndex;
+    const ie = f.inflationExp;
+    return [
+      ry
+        ? `实际收益率 ${Number.isFinite(ry.value) ? `${ry.value}%` : '—'}（5日 ${fmtDelta(ry.delta5d, 'bp')}，数据截至 ${ry.asOf}）${mark(ry)}`
+        : '实际收益率 数据不可用',
+      usd
+        ? `美元指数 ${Number.isFinite(usd.value) ? usd.value.toFixed(2) : '—'}（5日 ${fmtDelta(usd.delta5d, 'pct')}，数据截至 ${usd.asOf}）${mark(usd)}`
+        : '美元指数 数据不可用',
+      ie
+        ? `10Y通胀预期 ${Number.isFinite(ie.value) ? `${ie.value}%` : '—'}（数据截至 ${ie.asOf}）${mark(ie)}`
+        : '10Y通胀预期 数据不可用',
+    ];
+  }
 
   function buildPrompt(ctx) {
     const p = cfg.strategy.prompt ?? {};
@@ -335,6 +385,13 @@ export function createProductEngine({
       '',
       '## 持仓',
       JSON.stringify(ctx.positions, null, 2),
+      '',
+      '## 宏观因子',
+      ...factorLines(ctx),
+      ...(ctx.peTable?.length
+        ? ['', '## 个股基本面（PE / 池内分位，分位低=相对便宜）',
+          ...ctx.peTable.map(x => `- ${x.name}(${x.symbol}) PE ${x.pe}（池内分位 ${x.percentile ?? '—'}）`)]
+        : []),
       '',
       '## 信号与候选',
       JSON.stringify(ctx.signals, null, 2),
@@ -604,6 +661,8 @@ export function createProductEngine({
     if (newsIngest) {
       try { lastIngest = await newsIngest(); } catch { /* news is best-effort */ }
     }
+    // Macro factors: staleness-gated network refresh; failures keep the cache.
+    try { factors = await collectFactors(fetchFn, db, now); } catch { /* keep cached */ }
     const news = (newsList?.() ?? []);
 
     const risk = riskCheck();
@@ -630,6 +689,15 @@ export function createProductEngine({
         signals: scored,
         picked,
         news,
+        factors,
+        peTable: product.market.kind === 'multi'
+          ? pool().map(w => ({
+            symbol: w.symbol,
+            name: w.name,
+            pe: quote?.[w.symbol]?.pe ?? null,
+            percentile: pePercentileOf(w.symbol),
+          })).filter(x => Number.isFinite(x.pe))
+          : [],
       };
       try {
         const raw = await llm(buildPrompt(ctx));
@@ -707,6 +775,7 @@ export function createProductEngine({
       series,
       chartSymbol: watchSymbol,
       benchmark: benchmarkView(),
+      factors,
       watchlist: pool(),
       fx: cfg.currency === 'CNY' ? null : fxRate,
       ingest: lastIngest,

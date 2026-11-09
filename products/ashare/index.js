@@ -54,6 +54,7 @@ export default {
       { id: 'trend', params: { fast: 5, slow: 20 }, weight: 1.2 },
       { id: 'momentum', params: { period: 10, threshold: 0.03 }, weight: 1 },
       { id: 'rsi', params: { period: 14 }, weight: 0.6 },
+      { id: 'valuation', params: { low: 0.3, high: 0.8 }, weight: 0.6 },
     ],
     prompt: {
       role: '你是A股投资策略引擎，负责模拟组合的选股与仓位决策。',
@@ -71,6 +72,7 @@ export default {
       { path: 'signals.volume.params.hot', min: 1.2, max: 3, step: 0.1 },
       { path: 'risk.stopLossPct', min: -12, max: -1, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 2, max: 30, step: 0.5 },
+      { path: 'signals.valuation.weight', min: 0, max: 2, step: 0.1 },
     ],
   },
 

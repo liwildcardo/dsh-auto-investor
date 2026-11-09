@@ -153,7 +153,8 @@ function volumeSignal(ctx, params = {}) {
 
 function valuationSignal(ctx, params = {}) {
   const p = Number(ctx.pePercentile);
-  if (!Number.isFinite(p)) return { score: 0, note: '无估值数据' };
+  // noData: without PE the signal abstains (does not dilute the composite).
+  if (!Number.isFinite(p)) return { score: 0, note: '无估值数据', noData: true };
   const low = params.low ?? 0.3;
   const high = params.high ?? 0.8;
   if (p <= low) return { score: 2, note: `PE 分位 ${(p * 100).toFixed(0)}% 偏低` };
@@ -161,6 +162,40 @@ function valuationSignal(ctx, params = {}) {
   if (p >= high) return { score: -2, note: `PE 分位 ${(p * 100).toFixed(0)}% 偏高` };
   if (p > 0.65) return { score: -1, note: `PE 分位 ${(p * 100).toFixed(0)}% 中高` };
   return { score: 0, note: `PE 分位 ${(p * 100).toFixed(0)}%` };
+}
+
+/**
+ * 实际收益率（10Y TIPS）5 日变化 —— 黄金的核心宏观驱动：
+ * 收益率下行 → 持金机会成本下降 → 利好黄金。delta5d 单位为百分点（pp）。
+ */
+function realYieldSignal(ctx, params = {}) {
+  const f = ctx.realYield;
+  if (!f) return { score: 0, note: '无实际收益率数据', noData: true };
+  if (f.stale) return { score: 0, note: '实际收益率数据过期', noData: true };
+  if (!Number.isFinite(f.delta5d)) return { score: 0, note: '实际收益率历史不足', noData: true };
+  const bp = Math.round(f.delta5d * 100);
+  if (bp <= -15) return { score: 2, note: `实际收益率 5日${bp}bp（利好黄金）` };
+  if (bp <= -5) return { score: 1, note: `实际收益率 5日${bp}bp` };
+  if (bp >= 15) return { score: -2, note: `实际收益率 5日+${bp}bp（利空黄金）` };
+  if (bp >= 5) return { score: -1, note: `实际收益率 5日+${bp}bp` };
+  return { score: 0, note: `实际收益率 5日${bp}bp（中性）` };
+}
+
+/**
+ * 美元指数（DXY 合成）5 日变化 —— 美元走强压制以美元计价的黄金。
+ * delta5d 单位为百分比（%）。
+ */
+function usdIndexSignal(ctx, params = {}) {
+  const f = ctx.usdIndex;
+  if (!f) return { score: 0, note: '无美元指数数据', noData: true };
+  if (f.stale) return { score: 0, note: '美元指数数据过期', noData: true };
+  if (!Number.isFinite(f.delta5d)) return { score: 0, note: '美元指数历史不足', noData: true };
+  const pct = f.delta5d;
+  if (pct <= -0.5) return { score: 2, note: `美元 5日${pct.toFixed(2)}%（利好黄金）` };
+  if (pct <= -0.15) return { score: 1, note: `美元 5日${pct.toFixed(2)}%` };
+  if (pct >= 0.5) return { score: -2, note: `美元 5日+${pct.toFixed(2)}%（利空黄金）` };
+  if (pct >= 0.15) return { score: -1, note: `美元 5日+${pct.toFixed(2)}%` };
+  return { score: 0, note: `美元 5日${pct.toFixed(2)}%（中性）` };
 }
 
 const POSITIVE = ['上涨', '增持', '突破', '利好', '超预期', '增长', '回购', '分红', '降息', '宽松', '创新高'];
@@ -187,6 +222,8 @@ export const SIGNALS = {
   volume: volumeSignal,
   valuation: valuationSignal,
   news: newsSentimentSignal,
+  realYield: realYieldSignal,
+  usdIndex: usdIndexSignal,
 };
 
 /** Evaluate one product's configured signals against a market snapshot. */
@@ -195,15 +232,20 @@ export function evaluateSignals(signals, ctx) {
   for (const s of signals ?? []) {
     const fn = SIGNALS[s.id];
     if (!fn) continue;
-    const { score, note } = fn(ctx, s.params ?? {}) ?? { score: 0, note: '' };
-    out.push({ id: s.id, score, note, weight: s.weight ?? 1 });
+    const { score, note, noData } = fn(ctx, s.params ?? {}) ?? { score: 0, note: '' };
+    out.push({ id: s.id, score, note, weight: s.weight ?? 1, ...(noData ? { noData: true } : {}) });
   }
   return out;
 }
 
-/** Weighted average score → -2..+2. */
+/**
+ * Weighted average score → -2..+2.
+ * Signals marked `noData` (missing/stale factor inputs) ABSTAIN: they are
+ * excluded from both numerator and denominator so absent data never dilutes
+ * an otherwise strong composite (spec §3/§9 refinement).
+ */
 export function compositeScore(evaluated) {
-  const list = evaluated ?? [];
+  const list = (evaluated ?? []).filter(s => !s.noData);
   const w = list.reduce((a, s) => a + Math.abs(s.weight ?? 1), 0);
   if (!w) return 0;
   const sum = list.reduce((a, s) => a + (s.score ?? 0) * (s.weight ?? 1), 0);

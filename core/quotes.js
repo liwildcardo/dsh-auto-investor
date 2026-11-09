@@ -4,7 +4,7 @@
  */
 import { zonedEpoch } from './market-rules.js';
 
-const FIELD = { price: 3, prevClose: 4, open: 5, volume: 6 };
+const FIELD = { price: 3, prevClose: 4, open: 5, volume: 6, pe: 39 };
 
 /** Parse the `v_sh600000="1~name~code~..."` payload into normalized quotes. */
 export function parseTencent(text) {
@@ -14,12 +14,15 @@ export function parseTencent(text) {
     const f = body.split('~');
     const price = Number(f[FIELD.price]);
     if (!Number.isFinite(price) || price <= 0) continue;
+    const pe = Number(f[FIELD.pe]);
     out.push({
       symbol,
       price,
       prevClose: Number(f[FIELD.prevClose]) || null,
       open: Number(f[FIELD.open]) || null,
       volume: Number(f[FIELD.volume]) || 0,
+      // PE(TTM) — same field index on A-share/HK/US payloads (verified).
+      pe: Number.isFinite(pe) && pe > 0 ? pe : null,
       currency: symbol.startsWith('us') ? 'USD' : symbol.startsWith('hk') ? 'HKD' : 'CNY',
     });
   }

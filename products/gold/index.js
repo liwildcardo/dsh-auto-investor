@@ -50,6 +50,8 @@ export default {
       { id: 'trend', params: { fast: 5, slow: 20 }, weight: 1.2 },
       { id: 'momentum', params: { period: 10, threshold: 0.02 }, weight: 1 },
       { id: 'rsi', params: { period: 14 }, weight: 0.6 },
+      { id: 'realYield', weight: 0.8 },
+      { id: 'usdIndex', weight: 0.6 },
     ],
     prompt: {
       role: '你是黄金投资策略引擎，负责招行黄金账户的模拟投资决策。',
@@ -64,6 +66,8 @@ export default {
       { path: 'signals.trend.weight', min: 0.2, max: 3, step: 0.1 },
       { path: 'risk.stopLossPct', min: -12, max: -1, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 1, max: 20, step: 0.5 },
+      { path: 'signals.realYield.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'signals.usdIndex.weight', min: 0, max: 2, step: 0.1 },
     ],
   },
 

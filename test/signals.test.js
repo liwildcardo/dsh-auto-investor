@@ -54,3 +54,45 @@ test('composite score is a weighted average, candidates are ranked', () => {
   ], { threshold: 0.8, topN: 5 });
   assert.deepEqual(picked.map(x => x.symbol), ['a', 'b']);
 });
+
+test('realYield signal: falling real yields are bullish for gold', () => {
+  const mk = (delta5d, extra = {}) => ({ realYield: { delta5d, stale: false, ...extra } });
+  assert.equal(evaluateSignals([{ id: 'realYield' }], mk(-0.20))[0].score, 2, '−20bp → +2');
+  assert.equal(evaluateSignals([{ id: 'realYield' }], mk(-0.08))[0].score, 1, '−8bp → +1');
+  assert.equal(evaluateSignals([{ id: 'realYield' }], mk(0.25))[0].score, -2, '+25bp → −2');
+  assert.equal(evaluateSignals([{ id: 'realYield' }], mk(0.07))[0].score, -1, '+7bp → −1');
+  assert.equal(evaluateSignals([{ id: 'realYield' }], mk(0.01))[0].score, 0, '+1bp → neutral');
+  assert.equal(evaluateSignals([{ id: 'realYield' }], { realYield: { delta5d: -0.2, stale: true } })[0].score, 0, 'stale → neutral');
+  assert.equal(evaluateSignals([{ id: 'realYield' }], {})[0].score, 0, 'missing → neutral');
+});
+
+test('usdIndex signal: a stronger dollar is bearish for gold', () => {
+  const mk = (delta5d, extra = {}) => ({ usdIndex: { delta5d, stale: false, ...extra } });
+  assert.equal(evaluateSignals([{ id: 'usdIndex' }], mk(-0.8))[0].score, 2, '−0.8% → +2');
+  assert.equal(evaluateSignals([{ id: 'usdIndex' }], mk(-0.2))[0].score, 1, '−0.2% → +1');
+  assert.equal(evaluateSignals([{ id: 'usdIndex' }], mk(0.9))[0].score, -2, '+0.9% → −2');
+  assert.equal(evaluateSignals([{ id: 'usdIndex' }], mk(0.3))[0].score, -1, '+0.3% → −1');
+  assert.equal(evaluateSignals([{ id: 'usdIndex' }], mk(0.05))[0].score, 0, 'flat → neutral');
+  assert.equal(evaluateSignals([{ id: 'usdIndex' }], { usdIndex: { delta5d: -0.8, stale: true } })[0].score, 0, 'stale → neutral');
+});
+
+test('valuation signal keeps its percentile boundaries', () => {
+  const ev = (p) => evaluateSignals([{ id: 'valuation', params: { low: 0.3, high: 0.8 } }], { pePercentile: p })[0];
+  assert.equal(ev(0.2).score, 2);
+  assert.equal(ev(0.4).score, 1);
+  assert.equal(ev(0.9).score, -2);
+  assert.equal(ev(0.7).score, -1);
+  assert.equal(ev(0.55).score, 0);
+  assert.equal(ev(undefined).score, 0, 'no data → score 0');
+  assert.equal(ev(undefined).noData, true, 'no data → abstains (flagged)');
+});
+
+test('noData signals abstain instead of diluting the composite', () => {
+  const evaluated = [
+    { score: 2, weight: 1.2 },                       // informed technical signal
+    { score: 0, weight: 0.6, noData: true },         // factor without data
+    { score: -2, weight: 0.6, noData: true },        // stale factor must not push down either
+  ];
+  assert.equal(compositeScore(evaluated), 2, 'only the informed signal counts');
+  assert.equal(compositeScore([{ score: 0, noData: true }]), 0, 'all abstain → 0');
+});

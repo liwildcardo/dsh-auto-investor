@@ -173,6 +173,40 @@ test('the selected product dashboard renders data and controls', async () => {
   }
 });
 
+test('macro factor summary renders with values and data dates', async () => {
+  const state = {
+    ...fakeState,
+    factors: {
+      realYield: { value: 2.05, delta5d: -0.08, asOf: '2026-11-06', stale: false },
+      usdIndex: { value: 99.12, delta5d: -0.4, asOf: '2026-11-09', stale: false },
+      inflationExp: { value: 2.31, asOf: '2026-11-06', stale: false },
+    },
+  };
+  const api = await loadClient(state);
+  const text = JSON.stringify(renderPage(applyAndCapture(api)));
+  assert.ok(text.includes('宏观因子：'), 'factor summary row rendered');
+  assert.ok(text.includes('实际收益率 2.05%'), 'real yield value');
+  assert.ok(text.includes('-8bp'), '5-day change in bp');
+  assert.ok(text.includes('美元指数 99.12'), 'usd index value');
+  assert.ok(text.includes('10Y通胀预期 2.31%'), 'inflation expectation');
+  assert.ok(!text.includes('【过期】'), 'fresh data not flagged');
+});
+
+test('stale factors are flagged in the summary', async () => {
+  const state = {
+    ...fakeState,
+    factors: {
+      realYield: { value: 2.05, delta5d: -0.08, asOf: '2026-10-01', stale: true },
+      usdIndex: null,
+      inflationExp: null,
+    },
+  };
+  const api = await loadClient(state);
+  const text = JSON.stringify(renderPage(applyAndCapture(api)));
+  assert.ok(text.includes('【过期】'), 'stale marker shown');
+  assert.ok(text.includes('美元指数 数据不可用'), 'missing factor stated');
+});
+
 test('only the latest reflection is rendered', async () => {
   const state = {
     ...fakeState,

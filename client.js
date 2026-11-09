@@ -482,6 +482,35 @@ window.__ModuleLoader__.load({
         })()
         : null;
 
+      // Macro factors snapshot (spec §7): value + 5-day change + data date.
+      const factorNote = (() => {
+        const f = state.factors;
+        if (!f) return null;
+        const bp = (d) => (Number.isFinite(d) ? `${d >= 0 ? '+' : ''}${Math.round(d * 100)}bp` : '—');
+        const pct = (d) => (Number.isFinite(d) ? `${d >= 0 ? '+' : ''}${d.toFixed(2)}%` : '—');
+        const asOf = (x) => (x?.asOf ? String(x.asOf).slice(5) : '');
+        const mark = (x) => (x?.stale ? '【过期】' : '');
+        const parts = [];
+        parts.push(f.realYield
+          ? `实际收益率 ${Number.isFinite(f.realYield.value) ? `${f.realYield.value}%` : '—'}（5日${bp(f.realYield.delta5d)}，截至${asOf(f.realYield)}${mark(f.realYield)}）`
+          : '实际收益率 数据不可用');
+        parts.push(f.usdIndex
+          ? `美元指数 ${Number.isFinite(f.usdIndex.value) ? f.usdIndex.value.toFixed(2) : '—'}（5日${pct(f.usdIndex.delta5d)}，截至${asOf(f.usdIndex)}${mark(f.usdIndex)}）`
+          : '美元指数 数据不可用');
+        if (f.inflationExp) {
+          parts.push(`10Y通胀预期 ${Number.isFinite(f.inflationExp.value) ? `${f.inflationExp.value}%` : '—'}（截至${asOf(f.inflationExp)}${mark(f.inflationExp)}）`);
+        }
+        // Stock pools: cross-sectional PE range from the quote map.
+        if (state.quote && typeof state.quote === 'object') {
+          const pes = Object.values(state.quote)
+            .map(q => q?.pe)
+            .filter(p => Number.isFinite(p) && p > 0)
+            .sort((a, b) => a - b);
+          if (pes.length >= 2) parts.push(`池内PE ${pes[0].toFixed(1)}~${pes[pes.length - 1].toFixed(1)}`);
+        }
+        return h('div', { className: 'ai-note' }, `宏观因子：${parts.join(' · ')}`);
+      })();
+
       const watchlist = state.watchlist ?? [];
       const nameOf = new Map(watchlist.map(w => [w.symbol, w.name]));
       const isMulti = p.kind === 'multi';
@@ -576,6 +605,7 @@ window.__ModuleLoader__.load({
         kpis,
         fxNote,
         benchNote,
+        factorNote,
         watchlistCard,
 
         h('div', { className: 'ai-grid' },
