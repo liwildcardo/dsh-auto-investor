@@ -137,7 +137,7 @@ export function apply(ctx, config) {
       llmInfo,
     });
   });
-  const hub = createHub({ engines, products });
+  const hub = createHub({ engines, products, fetchFn });
   const state = { lastRun: null };
 
   ctx.effect(() => registerTools(ctx, hub), 'auto-investor: tools');

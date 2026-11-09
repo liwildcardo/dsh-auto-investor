@@ -33,7 +33,7 @@ function loadClient(fakeState = undefined) {
 }
 
 const fakeState = {
-  product: { id: 'gold', name: '黄金', currency: 'CNY', unit: 'gram' },
+  product: { id: 'gold', name: '黄金', currency: 'CNY', unit: 'gram', kind: 'single' },
   quote: { price: 875.35, buy: 877.85, sell: 872.85 },
   quoteTs: 1,
   paused: false,
@@ -75,6 +75,24 @@ const fakeState = {
   fx: null,
   llm: { provider: 'deepseek-account', model: 'deepseek-flash' },
   ingest: null,
+};
+
+/** A stock product state with an editable watchlist and named trades. */
+const fakeStockState = {
+  ...fakeState,
+  product: { id: 'hk', name: '港股', currency: 'HKD', unit: 'share', kind: 'multi' },
+  snapshot: {
+    ...fakeState.snapshot,
+    currency: 'HKD',
+    positions: [{ symbol: 'hk09988', qty: 100, costAvg: 105, price: 108, value: 10800, pnl: 300, today: 120 }],
+    positionsValue: 10800,
+  },
+  watchlist: [
+    { symbol: 'hk00700', name: '腾讯控股', lot: 100 },
+    { symbol: 'hk09988', name: '阿里巴巴', lot: 100 },
+  ],
+  chartSymbol: 'hk00700',
+  trades: [{ ts: 1, side: 'buy', symbol: 'hk09988', name: '阿里巴巴', price: 105, rmb: 10500 }],
 };
 
 function applyAndCapture(api) {
@@ -175,4 +193,36 @@ test('estimated news dates render as 约 instead of 日期未知', async () => {
   const text = JSON.stringify(renderPage(reg));
   assert.ok(text.includes('约 11-07'), 'estimated date rendered as approximate');
   assert.ok(!text.includes('日期未知'), 'no blank unknown dates');
+});
+
+test('gold (single) shows no watchlist card or chart switcher', async () => {
+  const api = await loadClient(fakeState);
+  const text = JSON.stringify(renderPage(applyAndCapture(api)));
+  assert.ok(!text.includes('自选池'), 'no watchlist card for gold');
+  assert.ok(!text.includes('恢复默认池'), 'no pool actions for gold');
+});
+
+test('stock product renders watchlist editor, chart switcher and name columns', async () => {
+  const api = await loadClient(fakeStockState);
+  const tree = renderPage(applyAndCapture(api));
+  const text = JSON.stringify(tree);
+
+  // Watchlist editor: search box, pool chips with remove, reset, counter.
+  assert.ok(text.includes('自选池'), 'watchlist card shown');
+  assert.ok(text.includes('2/10'), 'counter shown');
+  assert.ok(text.includes('腾讯控股 hk00700'), 'pool chip with name');
+  assert.ok(text.includes('阿里巴巴 hk09988'), 'second pool chip');
+  assert.ok(text.includes('恢复默认池'), 'reset action');
+  const inputs = findTree(tree, n => n.type === 'input');
+  assert.ok(inputs.length >= 1, 'search input rendered');
+
+  // Chart switcher pills.
+  const buttons = findTree(tree, n => n.type === 'button');
+  const labels = buttons.map(b => (Array.isArray(b.children) ? b.children : [b.children]).filter(c => typeof c === 'string').join(''));
+  assert.ok(labels.includes('腾讯控股'), 'chart switcher has first symbol');
+  assert.ok(labels.includes('阿里巴巴'), 'chart switcher has second symbol');
+
+  // Name columns in positions and trades tables.
+  assert.ok(text.includes('名称'), 'name column header present');
+  assert.ok(text.includes('阿里巴巴'), 'trade name shown');
 });

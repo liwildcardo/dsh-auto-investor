@@ -9,6 +9,7 @@ import { isSessionOpen, roundLot, tradeFees, earliestSellTs, withinPriceBand } f
 import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
 import { fetchDailyHistory, fetchMinuteHistory, fetchFxRate } from './quotes.js';
+import { loadWatchlist, addToWatchlist, removeFromWatchlist, resetWatchlist } from './watchlist.js';
 
 const DEFAULT_SERIES = 240;
 
@@ -38,6 +39,9 @@ export function createProductEngine({
     const v = current().strategy?.signals;
     return Array.isArray(v) && v.length ? v : (cfg.strategy.signals ?? []);
   };
+  // Editable watchlist: persisted pool, falling back to product defaults.
+  const pool = () => loadWatchlist(db, product);
+  const poolNames = () => new Map(pool().map(w => [w.symbol, w.name]));
   const persist = () => {
     db.putState(pkey('account'), account);
     db.putState(pkey('versions'), versions.map(v => ({ ...v, strategy: stripFns(v.strategy) })));
@@ -95,7 +99,7 @@ export function createProductEngine({
   /** Seed history once per symbol so indicators work immediately. */
   async function seedHistory() {
     if (product.market.kind !== 'multi') return;
-    for (const w of (cfg.universe.watchlist(cfg) ?? []).slice(0, 20)) {
+    for (const w of pool().slice(0, 20)) {
       if (seriesFor(w.symbol).length >= 30) continue; // enough bars already
       const key = pkey(`seeded:${w.symbol}`);
       const seededAt = db.getState(key) ?? 0;
@@ -209,8 +213,8 @@ export function createProductEngine({
 
   function candidates(news) {
     const list = product.market.kind === 'single'
-      ? [product.universe.watchlist(cfg)[0]?.symbol ?? product.id]
-      : product.universe.watchlist(cfg).map(w => w.symbol);
+      ? [pool()[0]?.symbol ?? product.id]
+      : pool().map(w => w.symbol);
     const scored = list.map(s => evaluateSymbol(s, news));
     return { scored, picked: pickCandidates(scored, { threshold: cfg.strategy.candidates?.threshold ?? 0.8, topN: 5 }) };
   }
@@ -219,14 +223,14 @@ export function createProductEngine({
 
   function buildPrompt(ctx) {
     const p = cfg.strategy.prompt ?? {};
-    const symbols = new Set((cfg.universe.watchlist(cfg) ?? []).map(w => w.symbol));
+    const symbols = new Set(pool().map(w => w.symbol));
     const newsLines = (ctx.news ?? []).slice(0, 16);
     const perSymbol = newsLines.filter(n => symbols.has(n.source ?? ''));
     const market = newsLines.filter(n => !symbols.has(n.source ?? ''));
     const symbolBlock = [...symbols].map((s) => {
       const items = perSymbol.filter(n => n.source === s).slice(0, 3);
       if (!items.length) return null;
-      const name = (cfg.universe.watchlist(cfg) ?? []).find(w => w.symbol === s)?.name ?? s;
+      const name = pool().find(w => w.symbol === s)?.name ?? s;
       return [`### ${name} (${s})`, ...items.map(n => `- ${n.title}`)].join('\n');
     }).filter(Boolean);
     const lines = [
@@ -337,7 +341,7 @@ export function createProductEngine({
   }
 
   function execute(decision) {
-    const symbol = decision.symbol ?? (product.market.kind === 'single' ? (product.universe.watchlist(cfg)[0]?.symbol ?? product.id) : null);
+    const symbol = decision.symbol ?? (product.market.kind === 'single' ? (pool()[0]?.symbol ?? product.id) : null);
     if (!symbol) return { ok: false, reason: '缺目标标的' };
     const risk = effectiveRisk();
     const maxAgeSec = risk.quoteMaxAgeSec ?? 300;
@@ -375,8 +379,8 @@ export function createProductEngine({
       const fee = tradeFees(cfg.rules, 'buy', notional).total;
       if (notional + fee > account.cash + 1e-9) return { ok: false, reason: '现金不足' };
       applyBuy(account, { symbol, qty, price, fee, ts: now(), earliestSellTs: earliestSellTs(now(), cfg.rules, cfg.timezone) });
-      db.insertTrade({ ts: now(), side: 'buy', grams: cfg.rules.unit === 'gram' ? qty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol });
-      return { ok: true, side: 'buy', symbol, qty, price, fee, notional, reason: decision.reason };
+      db.insertTrade({ ts: now(), side: 'buy', grams: cfg.rules.unit === 'gram' ? qty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol, name: poolNames().get(symbol) ?? '' });
+      return { ok: true, side: 'buy', symbol, name: poolNames().get(symbol) ?? '', qty, price, fee, notional, reason: decision.reason };
     }
 
     if (decision.action === 'sell') {
@@ -389,8 +393,8 @@ export function createProductEngine({
       const fee = tradeFees(cfg.rules, 'sell', notional).total;
       try {
         const r = applySell(account, { symbol, qty: sellQty, price, fee, ts: now() });
-        db.insertTrade({ ts: now(), side: 'sell', grams: cfg.rules.unit === 'gram' ? sellQty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol, realized: r.realized });
-        return { ok: true, side: 'sell', symbol, qty: sellQty, price, fee, notional, realized: r.realized, reason: decision.reason };
+        db.insertTrade({ ts: now(), side: 'sell', grams: cfg.rules.unit === 'gram' ? sellQty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol, name: poolNames().get(symbol) ?? '', realized: r.realized });
+        return { ok: true, side: 'sell', symbol, name: poolNames().get(symbol) ?? '', qty: sellQty, price, fee, notional, realized: r.realized, reason: decision.reason };
       } catch (e) {
         return { ok: false, reason: String(e?.message ?? e) };
       }
@@ -496,14 +500,18 @@ export function createProductEngine({
 
   /* -------------------------------- status --------------------------------- */
 
-  function status() {
+  function status(symbol) {
     const snap = snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null);
-    const watchSymbol = cfg.universe.watchlist(cfg)[0]?.symbol ?? product.id;
+    // Chart target: an explicit symbol from the pool, else the pool's first.
+    const poolList = pool();
+    const watchSymbol = (symbol && poolList.some(w => w.symbol === symbol))
+      ? symbol
+      : (poolList[0]?.symbol ?? product.id);
     const series = product.market.kind === 'single'
       ? db.latestTicksByProduct(product.id, 120).map(t => ({ ts: t.ts, price: t.price }))
       : db.listPoints(product.id, watchSymbol, 120).map(p => ({ ts: p.ts, price: p.price }));
     return jsonSafe({
-      product: { id: cfg.id, name: cfg.name, currency: cfg.currency, unit: cfg.rules?.unit ?? 'share', order: cfg.order },
+      product: { id: cfg.id, name: cfg.name, currency: cfg.currency, unit: cfg.rules?.unit ?? 'share', kind: cfg.market?.kind ?? 'multi', order: cfg.order },
       quote,
       quoteTs,
       paused,
@@ -516,6 +524,7 @@ export function createProductEngine({
       reflections: db.getState(pkey('reflections')) ?? [],
       series,
       chartSymbol: watchSymbol,
+      watchlist: pool(),
       fx: cfg.currency === 'CNY' ? null : fxRate,
       ingest: lastIngest,
       llm: typeof llmInfo === 'function' ? llmInfo() : null,
@@ -703,6 +712,16 @@ export function createProductEngine({
     return lastIngest;
   }
 
+  /** Editable watchlist: add/remove/reset one product's pool. */
+  function watchlistAction({ action, symbol, name } = {}) {
+    const res = action === 'remove'
+      ? removeFromWatchlist(db, product, symbol)
+      : action === 'reset'
+        ? resetWatchlist(db, product)
+        : addToWatchlist(db, product, symbol, name);
+    return jsonSafe(res);
+  }
+
   return {
     id: cfg.id,
     product: cfg,
@@ -711,6 +730,8 @@ export function createProductEngine({
     reflectIfDue,
     status,
     ingestNews,
+    watchlist: () => pool(),
+    watchlistAction,
     listNews: (limit) => (typeof newsList === 'function' ? newsList(limit) : []),
     get quote() { return quote; },
     get account() { return account; },

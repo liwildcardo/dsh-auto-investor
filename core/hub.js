@@ -2,7 +2,9 @@
  * 多产品聚合层：把每个产品的引擎包装成带 product 维度的统一接口，
  * 供路由与 Agent 工具调用。单产品形态（旧测试）仍直接传 service。
  */
-export function createHub({ engines, products }) {
+import { searchSymbols } from './quotes.js';
+
+export function createHub({ engines, products, fetchFn = undefined }) {
   const byId = new Map(engines.map(e => [e.id, e]));
   // A typo'd product id must fail loudly instead of silently using another
   // product's account (agent tools and routes both rely on this).
@@ -20,7 +22,7 @@ export function createHub({ engines, products }) {
       const p = products.find(x => x.id === (pid ?? pids()[0]));
       return p ? { id: p.id, name: p.name, currency: p.currency, display: p.display ?? null } : null;
     },
-    status: (pid) => pick(pid).status(),
+    status: (pid, symbol) => pick(pid).status(symbol),
     runCycle: (pid) => pick(pid).runCycle(),
     reflectIfDue: (pid, opts = {}) => pick(pid).reflectIfDue(opts),
     pause: (pid, v) => pick(pid).pause(v),
@@ -30,6 +32,13 @@ export function createHub({ engines, products }) {
     },
     trades: (pid, limit = 20) => pick(pid).status().trades.slice(0, limit),
     versions: (pid) => pick(pid).status().versions,
+    watchlist: (pid) => pick(pid).watchlist(),
+    watchlistAction: (pid, body) => pick(pid).watchlistAction(body),
+    search: async (pid, q) => {
+      if (typeof fetchFn !== 'function') return [];
+      const product = products.find(x => x.id === (pid ?? pids()[0])) ?? products[0];
+      return searchSymbols(fetchFn, q, product?.id);
+    },
     tickAll: () => Promise.all(engines.map(e => e.tick().catch(() => null))),
   };
 }

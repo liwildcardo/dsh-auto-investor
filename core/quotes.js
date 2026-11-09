@@ -43,6 +43,45 @@ export async function fetchQuotes(fetchFn, symbols, timeoutMs = 8000) {
   return out;
 }
 
+/** Product id → smartbox market token(s). */
+const SEARCH_MARKET = { ashare: ['sh', 'sz'], us: ['us'], hk: ['hk'] };
+
+/**
+ * Parse Tencent smartbox results (`v_hint="sh~000847~name~pinyin~type^..."`).
+ * Returns [{symbol, name, market}] filtered to one product's markets.
+ */
+export function parseSmartbox(text, productId) {
+  const allowed = SEARCH_MARKET[productId];
+  if (!allowed) return [];
+  const out = [];
+  const m = String(text ?? '').match(/v_hint="([^"]*)"/);
+  if (!m) return out;
+  for (const entry of m[1].split('^')) {
+    const [market, code, name] = entry.split('~');
+    if (!market || !code || !name) continue;
+    if (!allowed.includes(market)) continue;
+    // US quote symbols are case-sensitive (ustcehy does not resolve).
+    const symbol = market === 'us' ? `us${code.toUpperCase()}` : `${market}${code}`;
+    out.push({ symbol, name: name.trim(), market });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+/** Search symbols by name/code for one product (smartbox proxy). */
+export async function searchSymbols(fetchFn, query, productId, timeoutMs = 8000) {
+  const q = String(query ?? '').trim();
+  if (!q) return [];
+  const url = `https://smartbox.gtimg.cn/s3/?q=${encodeURIComponent(q)}&t=all`;
+  const res = await fetchFn(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://gu.qq.com/' },
+  });
+  if (!res.ok) throw new Error(`search http ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  return parseSmartbox(new TextDecoder('gbk').decode(buf), productId);
+}
+
 /** FX rate (1 unit of `from` in CNY): USDCNY / HKDCNY via er-api. */
 export async function fetchFxRate(fetchFn, from = 'USD', timeoutMs = 8000) {
   const res = await fetchFn(`https://open.er-api.com/v6/latest/${from}`, {

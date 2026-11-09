@@ -167,6 +167,23 @@ window.__ModuleLoader__.load({
         border: 1px solid var(--dsw-alias-border-l1); }
       .ai-strip b { color: var(--dsw-alias-label-primary); font-weight: 600; }
 
+      .ai-input { flex: 1; min-width: 180px; padding: 8px 12px; border-radius: 10px;
+        border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2);
+        color: var(--dsw-alias-label-primary); font-size: 12.5px; outline: none; }
+      .ai-input:focus { border-color: var(--dsw-alias-brand-primary); }
+      .ai-wl-search { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+      .ai-wl-results { list-style: none; margin: 0 0 10px; padding: 0;
+        border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px;
+        background: var(--dsw-alias-bg-layer-2); max-height: 210px; overflow: auto; }
+      .ai-wl-results li { padding: 4px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+      .ai-wl-results li:last-child { border-bottom: none; }
+      .ai-wl-results .ai-btn { margin: 4px 0; width: 100%; text-align: left; border: none;
+        background: transparent; padding: 6px 8px; }
+      .ai-wl-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0 10px; }
+      .ai-chip-x { border: none; background: transparent; color: var(--dsw-alias-label-secondary);
+        cursor: pointer; font-size: 13px; line-height: 1; padding: 0 0 0 4px; }
+      .ai-chip-x:hover { color: var(--dsw-alias-state-error-primary); }
+
       .ai-tabs { display: flex; gap: 4px; padding: 4px; margin: 16px 24px 0;
         background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1);
         border-radius: 999px; width: fit-content; max-width: calc(100% - 48px); flex-wrap: wrap; }
@@ -225,10 +242,19 @@ window.__ModuleLoader__.load({
         }));
     }
 
-    async function fetchProductState(productId) {
-      const res = await fetch(`/api/auto-investor/state?product=${encodeURIComponent(productId)}`, { cache: 'no-store' });
+    async function fetchProductState(productId, symbol) {
+      const qs = `?product=${encodeURIComponent(productId)}${symbol ? `&symbol=${encodeURIComponent(symbol)}` : ''}`;
+      const res = await fetch(`/api/auto-investor/state${qs}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`state http ${res.status}`);
       return res.json();
+    }
+
+    function readChartSym(productId) {
+      try { return globalThis.localStorage?.getItem(`auto-investor:chart:${productId}`) ?? null; } catch { return null; }
+    }
+
+    function writeChartSym(productId, sym) {
+      try { globalThis.localStorage?.setItem(`auto-investor:chart:${productId}`, sym); } catch { /* non-fatal */ }
     }
 
     function Sparkline({ series, currency }) {
@@ -281,12 +307,15 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState(null);
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      const [chartSym, setChartSym] = React.useState(() => readChartSym(productId));
+      const [wlQuery, setWlQuery] = React.useState('');
+      const [wlResults, setWlResults] = React.useState(null);
 
       React.useEffect(() => {
         let alive = true;
         const load = async () => {
           try {
-            const s = await fetchProductState(productId);
+            const s = await fetchProductState(productId, chartSym);
             if (alive) { setState(s); setError(null); }
           } catch (e) {
             if (alive) setError(String(e?.message ?? e));
@@ -295,7 +324,9 @@ window.__ModuleLoader__.load({
         load();
         const timer = setInterval(load, 10_000);
         return () => { alive = false; clearInterval(timer); };
-      }, [productId]);
+      }, [productId, chartSym]);
+
+      const reload = async () => setState(await fetchProductState(productId, chartSym));
 
       const act = async (kind) => {
         setBusy(true);
@@ -312,11 +343,43 @@ window.__ModuleLoader__.load({
           setNotice(kind === 'run'
             ? `分析完成：${r.decision?.action ?? '-'}${r.rejection ? `（${r.rejection}）` : ''}`
             : kind === 'reflect' ? `复盘完成${r.versionCreated ? '，已生成新版本' : ''}` : '已切换循环状态');
-          setState(await fetchProductState(productId));
+          await reload();
         } catch (e) {
           setNotice(String(e?.message ?? e));
         } finally {
           setBusy(false);
+        }
+      };
+
+      const watchlistMutate = async (body) => {
+        setBusy(true);
+        setNotice(null);
+        try {
+          const res = await fetch('/api/auto-investor/watchlist', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...body, product: productId }),
+          });
+          const r = await res.json().catch(() => ({}));
+          if (!res.ok || r.ok === false) throw new Error(r.error ?? r.reason ?? `http ${res.status}`);
+          setNotice(`自选池已更新（${r.watchlist.length} 只）`);
+          await reload();
+        } catch (e) {
+          setNotice(String(e?.message ?? e));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const doSearch = async () => {
+        const q = wlQuery.trim();
+        if (!q) { setWlResults(null); return; }
+        try {
+          const res = await fetch(`/api/auto-investor/search?product=${encodeURIComponent(productId)}&q=${encodeURIComponent(q)}`, { cache: 'no-store' });
+          const body = await res.json().catch(() => ({}));
+          setWlResults(body.results ?? []);
+        } catch {
+          setWlResults([]);
         }
       };
 
@@ -380,8 +443,14 @@ window.__ModuleLoader__.load({
           `折人民币按汇率 ${fmt(fx, 4)} 估算（每 30 分钟刷新）。`)
         : null;
 
+      const watchlist = state.watchlist ?? [];
+      const nameOf = new Map(watchlist.map(w => [w.symbol, w.name]));
+      const isMulti = p.kind === 'multi';
+      const activeSym = state.chartSymbol ?? watchlist[0]?.symbol ?? '';
+
       const positionRows = positions.map(pos => h('tr', { key: pos.symbol },
         h('td', null, pos.symbol),
+        h('td', null, nameOf.get(pos.symbol) ?? '—'),
         h('td', { className: 'num' }, fmtQty(pos.qty)),
         h('td', { className: 'num' }, fmt(pos.costAvg)),
         h('td', { className: 'num' }, fmt(pos.price)),
@@ -403,6 +472,7 @@ window.__ModuleLoader__.load({
         h('td', null, new Date(t.ts).toLocaleString('zh-CN')),
         h('td', { className: t.side === 'buy' ? 'ai-up' : 'ai-down' }, t.side === 'buy' ? '买入' : '卖出'),
         h('td', null, t.symbol ?? '—'),
+        h('td', null, t.name || nameOf.get(t.symbol) || '—'),
         h('td', { className: 'num' }, fmt(t.price)),
         h('td', { className: 'num' }, fmt(t.rmb))));
 
@@ -420,19 +490,69 @@ window.__ModuleLoader__.load({
           h('span', null, h('span', { className: 'k' }, '单标的 '), `${strat.risk.perSymbolPct ?? '-'}%`))
         : null;
 
+      const watchlistCard = isMulti
+        ? card('grey', '自选池', h('span', { className: 'ai-src' }, `${watchlist.length}/10 · 引擎仅在池内标的中选股`), [
+          h('div', { className: 'ai-wl-search' },
+            h('input', {
+              className: 'ai-input',
+              placeholder: '搜索代码或名称，如 00700 / 腾讯',
+              value: wlQuery,
+              onChange: (e) => setWlQuery(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') doSearch(); },
+            }),
+            h('button', { className: 'ai-btn', disabled: busy, onClick: doSearch }, '搜索')),
+          wlResults
+            ? (wlResults.length === 0
+              ? h('div', { className: 'ai-note' }, '无匹配结果')
+              : h('ul', { className: 'ai-wl-results' }, wlResults.map(r => {
+                const added = watchlist.some(w => w.symbol === r.symbol);
+                return h('li', { key: r.symbol },
+                  h('button', {
+                    className: 'ai-btn',
+                    disabled: busy || added,
+                    onClick: () => {
+                      watchlistMutate({ action: 'add', symbol: r.symbol, name: r.name });
+                      setWlResults(null);
+                      setWlQuery('');
+                    },
+                  }, `${r.name}（${r.symbol}）${added ? ' · 已在池中' : ''}`));
+              })))
+            : null,
+          h('div', { className: 'ai-wl-chips' },
+            watchlist.map(w => h('span', { key: w.symbol, className: 'ai-chip' },
+              `${w.name} ${w.symbol}`,
+              h('button', {
+                className: 'ai-chip-x',
+                disabled: busy,
+                title: '移出自选池',
+                onClick: () => watchlistMutate({ action: 'remove', symbol: w.symbol }),
+              }, '×')))),
+          h('button', { className: 'ai-btn', disabled: busy, onClick: () => watchlistMutate({ action: 'reset' }) }, '恢复默认池'),
+        ])
+        : null;
+
       return h('div', { className: 'ai-wrap' },
         h('style', null, CSS),
         header,
         kpis,
         fxNote,
+        watchlistCard,
 
         h('div', { className: 'ai-grid' },
           card('brand', '持仓', h('span', { className: 'ai-src' }, `${positions.length} 个`), [
             positions.length === 0
               ? h('div', { className: 'ai-empty' }, '空仓 — 引擎会在信号满足条件时自动建仓')
-              : table(['标的', '数量', '成本', '现价', '盈亏'], positionRows),
+              : table(['标的', '名称', '数量', '成本', '现价', '盈亏'], positionRows),
           ]),
-          card('grey', '行情走势', h('span', { className: 'ai-src' }, state.chartSymbol ?? ''), [
+          card('grey', '行情走势', h('span', { className: 'ai-src' }, activeSym), [
+            isMulti && watchlist.length > 0
+              ? h('div', { className: 'ai-wl-chips' },
+                watchlist.map(w => h('button', {
+                  key: w.symbol,
+                  className: `ai-tab${w.symbol === activeSym ? ' active' : ''}`,
+                  onClick: () => { setChartSym(w.symbol); writeChartSym(productId, w.symbol); },
+                }, w.name)))
+              : null,
             h(Sparkline, { series: state.series, currency: p.currency }),
           ])),
 
@@ -454,7 +574,7 @@ window.__ModuleLoader__.load({
           card('grey', '交易记录', h('span', { className: 'ai-src' }, `共 ${(state.trades ?? []).length} 笔`), [
             (state.trades ?? []).length === 0
               ? h('div', { className: 'ai-empty' }, '暂无成交')
-              : table(['时间', '方向', '标的', '价格', '金额'], trades),
+              : table(['时间', '方向', '标的', '名称', '价格', '金额'], trades),
           ]),
           card('grey', '最新资讯', h('span', { className: 'ai-src' }, `共 ${(state.news ?? []).length} 条`), [
             (state.news ?? []).length === 0
