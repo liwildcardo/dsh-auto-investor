@@ -673,11 +673,19 @@ export function createProductEngine({
     if (newsIngest) {
       try { lastIngest = await newsIngest(); } catch { /* news is best-effort */ }
     }
-    // Macro factors refresh in the BACKGROUND: a slow/unreachable FRED must
+    // Macro factors refresh in the BACKGROUND: a slow/unreachable source must
     // never delay a decision cycle (signals simply abstain until data lands).
-    collectFactors(fetchFn, db, now)
+    // Give the (usually fast) fetch a bounded 3s window before the prompt is
+    // built so the first cycle after boot/refresh also sees factor data;
+    // the promise keeps filling the cache either way.
+    const factorPromise = collectFactors(fetchFn, db, now)
       .then((f) => { factors = f; })
       .catch(() => { /* keep the previous snapshot */ });
+    let factorTimer;
+    await Promise.race([
+      factorPromise,
+      new Promise((resolve) => { factorTimer = setTimeout(resolve, 3000); }),
+    ]).finally(() => clearTimeout(factorTimer));
     const news = (newsList?.() ?? []);
 
     const risk = riskCheck();
