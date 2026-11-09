@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../lib/db.js';
 import {
-  parseEmQuote, computeDxy, collectFactors, readFactors, peFromQuote,
+  parseEmQuote, parseEmKlines, parseFrankfurterDxy, computeDxy,
+  collectFactors, readFactors, peFromQuote,
 } from '../core/factor-sources.js';
 
 const DAY = 86_400_000;
@@ -108,6 +109,47 @@ test('readFactors derives delta5d in percentage points and percent', (t) => {
   assert.ok(Math.abs(f.realYield.delta5d - (-0.15)) < 1e-9, 'pp difference');
   assert.ok(Math.abs(f.usdIndex.delta5d - (-1)) < 1e-9, 'percent change');
   assert.equal(f.inflationExp, undefined, 'dropped: no free source');
+});
+
+test('parseEmKlines reads the close column and skips junk rows', () => {
+  const rows = parseEmKlines(['2026-09-01,2.4312,2.4425', 'garbage', '2026-09-02,2.4425,2.4351,x']);
+  assert.deepEqual(rows, [
+    { date: '2026-09-01', value: 2.4425 },
+    { date: '2026-09-02', value: 2.4351 },
+  ]);
+  assert.equal(parseEmKlines(undefined).length, 0);
+});
+
+test('parseFrankfurterDxy computes DXY per date from ECB rates', () => {
+  const rates = { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 };
+  const rows = parseFrankfurterDxy({ rates: { '2026-11-03': rates, '2026-11-04': { EUR: 0.85 } } });
+  assert.equal(rows.length, 1, 'rows with missing currencies are skipped');
+  assert.equal(rows[0].date, '2026-11-03');
+  assert.ok(rows[0].value > 80 && rows[0].value < 130);
+});
+
+test('history seeding unlocks delta5d on the first collect', async (t) => {
+  const db = harness(t);
+  const now = () => Date.UTC(2026, 10, 9, 4, 0);
+  const fetchFn = async (url) => {
+    const u = String(url);
+    if (u.includes('push2his')) {
+      return { ok: true, json: async () => ({ data: { klines: ['2026-11-03,2.60,2.66', '2026-11-04,2.66,2.58', '2026-11-05,2.58,2.55'] } }) };
+    }
+    if (u.includes('push2.eastmoney.com')) {
+      return { ok: true, json: async () => ({ data: { f43: 26174, f86: Math.floor(now() / 1000) } }) };
+    }
+    if (u.includes('frankfurter')) {
+      return { ok: true, json: async () => ({ rates: { '2026-11-03': { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 } } }) };
+    }
+    return { ok: true, json: async () => ({ rates: { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 } }) };
+  };
+  const f = await collectFactors(fetchFn, db, now);
+  const stored = db.getState('factor:em:UI10Y');
+  assert.ok(stored.values.length >= 4, `history seeded, got ${stored.values.length}`);
+  assert.ok(Number.isFinite(f.realYield.delta5d), `realYield delta available, got ${f.realYield.delta5d}`);
+  assert.ok(Math.abs(f.realYield.value - 2.6174) < 1e-9, 'current quote value');
+  assert.ok(Number.isFinite(f.usdIndex.delta5d), 'usd delta seeded from ECB history');
 });
 
 test('peFromQuote reads field 39 across markets', () => {

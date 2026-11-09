@@ -25,6 +25,34 @@ export function parseEmQuote(json, now = () => Date.now()) {
   return { value, asOf, name: d?.f58 ? String(d.f58) : null };
 }
 
+/** Parse eastmoney daily klines ("date,open,close") → [{date, value}] (close). */
+export function parseEmKlines(klines) {
+  return (klines ?? []).map((line) => {
+    const parts = String(line).split(',');
+    const date = parts[0];
+    const value = Number(parts[2]); // close
+    return /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(value) ? { date, value } : null;
+  }).filter(Boolean);
+}
+
+/** Parse a frankfurter time-series (base USD) → [{date, dxy}] via computeDxy. */
+export function parseFrankfurterDxy(json) {
+  const out = [];
+  for (const [date, rates] of Object.entries(json?.rates ?? {})) {
+    const value = computeDxy(rates);
+    if (Number.isFinite(value)) out.push({ date, value: Math.round(value * 100) / 100 });
+  }
+  return out;
+}
+
+/** Merge history before current values; current wins on the same date. */
+function mergeHistory(history, current) {
+  const byDate = new Map();
+  for (const p of history ?? []) if (p?.date) byDate.set(p.date, p);
+  for (const p of current ?? []) if (p?.date) byDate.set(p.date, p);
+  return [...byDate.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([, v]) => v);
+}
+
 /** DXY standard formula from USD-base FX rates (er-api shape). */
 export function computeDxy(rates) {
   const { EUR, JPY, GBP, CAD, SEK, CHF } = rates ?? {};
@@ -89,10 +117,19 @@ async function getEmFactor(fetchFn, db, { key, secid }, now) {
     if (!res.ok) throw new Error(`em http ${res.status}`);
     const parsed = parseEmQuote(await res.json(), now);
     if (!parsed) throw new Error('em quote parse failed');
-    const values = [...(cached?.values ?? [])];
-    const lastDate = values[values.length - 1]?.date;
-    if (lastDate === parsed.asOf) values[values.length - 1] = { date: parsed.asOf, value: parsed.value };
-    else values.push({ date: parsed.asOf, value: parsed.value });
+    let values = mergeHistory(cached?.values ?? [], [{ date: parsed.asOf, value: parsed.value }]);
+    // Bootstrap: delta5d needs ≥2 points; without history the factor would
+    // abstain for days. One-shot best-effort seed from the daily kline.
+    if (values.length < 2) {
+      try {
+        const beg = new Date(now() - 60 * DAY).toISOString().slice(0, 10).replaceAll('-', '');
+        const h = await fetchFn(
+          `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3&fields2=f51,f52,f53&klt=101&fqt=0&beg=${beg}&end=20991231`,
+          { signal: AbortSignal.timeout(15_000), headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://quote.eastmoney.com/' } },
+        );
+        if (h.ok) values = mergeHistory(parseEmKlines((await h.json())?.data?.klines), values);
+      } catch { /* seed failure → next 26h cycle retries */ }
+    }
     const entry = { values: values.slice(-60), value: parsed.value, asOf: parsed.asOf, fetchedAt: now() };
     db.putState(key, entry);
     return entry;
@@ -126,10 +163,19 @@ async function getUsdIndex(fetchFn, db, now) {
     const value = computeDxy(json?.rates);
     if (!Number.isFinite(value)) throw new Error('dxy unavailable');
     const asOf = new Date(now() + 8 * 3600_000).toISOString().slice(0, 10); // Shanghai date
-    const values = [...(cached?.values ?? [])];
-    const lastDate = values[values.length - 1]?.date;
-    if (lastDate === asOf) values[values.length - 1] = { date: asOf, value };
-    else values.push({ date: asOf, value });
+    let values = mergeHistory(cached?.values ?? [], [{ date: asOf, value }]);
+    // Bootstrap from ECB history (frankfurter, base USD → same per-USD shape)
+    // so the 5-day delta works from day one.
+    if (values.length < 2) {
+      try {
+        const start = new Date(now() - 60 * DAY).toISOString().slice(0, 10);
+        const h = await fetchFn(`https://api.frankfurter.app/${start}..?from=USD`, {
+          signal: AbortSignal.timeout(15_000),
+          headers: { 'user-agent': 'Mozilla/5.0' },
+        });
+        if (h.ok) values = mergeHistory(parseFrankfurterDxy(await h.json()), values);
+      } catch { /* seed failure → next 26h cycle retries */ }
+    }
     const entry = { values: values.slice(-60), value, asOf, fetchedAt: now() };
     db.putState(key, entry);
     return entry;
