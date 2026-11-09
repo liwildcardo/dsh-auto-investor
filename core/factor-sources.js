@@ -78,6 +78,7 @@ async function getFredSeries(fetchFn, db, id, now) {
   const key = `factor:fred:${id}`;
   const cached = db.getState(key);
   if (cached && now() - (cached.fetchedAt ?? 0) < FRED_MAX_AGE) return cached;
+  const started = Date.now();
   try {
     // cosd limits the CSV range (~60 days ≈ 784 bytes vs the full 99KB):
     // a tiny payload survives slow paths that the full history could not.
@@ -100,6 +101,8 @@ async function getFredSeries(fetchFn, db, id, now) {
       asOf: cached?.asOf ?? null,
       fetchedAt: 0,
       error: String(e?.message ?? e).slice(0, 160),
+      errorMs: Date.now() - started, // how long the attempt took (diagnosis)
+      errorAt: new Date(started + 8 * 3600_000).toISOString(),
     };
     try { db.putState(key, entry); } catch { /* best effort */ }
     return cached ?? entry;
