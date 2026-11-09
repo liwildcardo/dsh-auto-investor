@@ -541,11 +541,18 @@ window.__ModuleLoader__.load({
         h('td', { className: 'num' }, fmt(t.price)),
         h('td', { className: 'num' }, fmt(t.rmb))));
 
-      const news = (state.news ?? []).slice(0, 8).map((n, i) => h('li', { key: i },
-        h('a', { href: n.url, target: '_blank', rel: 'noreferrer' }, plain(n.title)),
-        h('div', null,
-          h('span', { className: 'ai-src' }, n.source ?? ''),
-          h('span', { className: 'ai-chip' }, newsWhen(n) || '—'))));
+      // The card is titled 最新资讯: show newest-first (dated before
+      // estimated), regardless of the relevance ranking used for the prompt.
+      const news = (state.news ?? [])
+        .slice()
+        .sort((a, b) => (Number(a.tsEstimated) - Number(b.tsEstimated))
+          || ((b.ts ?? 0) - (a.ts ?? 0)))
+        .slice(0, 8)
+        .map((n, i) => h('li', { key: i },
+          h('a', { href: n.url, target: '_blank', rel: 'noreferrer' }, plain(n.title)),
+          h('div', null,
+            h('span', { className: 'ai-src' }, n.source ?? ''),
+            h('span', { className: 'ai-chip' }, newsWhen(n) || '—'))));
 
       const riskLine = strat.risk
         ? h('div', { className: 'ai-plan' },

@@ -13,6 +13,30 @@ const feed = (name) => DEFAULT_FEEDS.find(f => f.name === name);
 
 /* ---------- I6: real-page fixtures guard selector drift ---------- */
 
+test('rankNews collapses syndicated rewrites of one story (union-find bigram Jaccard)', () => {
+  const now = Date.parse('2026-11-09T12:00:00Z');
+  const story = [
+    '连续24个月，人民银行增持黄金！',
+    '中国央行连续第24个月增持黄金',
+    '央行，连续24个月增持黄金',
+    '中国央行，连续第24个月增持黄金！最新解读',
+  ];
+  const items = story.map((title, i) => ({ ts: now - i * 3600_000, source: `s${i}`, title }));
+  const out = rankNews(items, now, null);
+  assert.equal(out.length, 1, `one cluster survives: ${out.map(x => x.title).join(' | ')}`);
+
+  // Distinct stories must NOT merge — especially same-template headlines
+  // from different companies (茅台 vs 宁德) and different topics. Each item
+  // carries gold context in the summary so the relevance gate keeps them.
+  const distinct = rankNews([
+    { ts: now, source: 'a', title: '中国央行连续第24个月增持黄金', summary: '黄金储备变化' },
+    { ts: now - 1000, source: 'b', title: '高盛下调黄金价格目标至4000美元', summary: '黄金价格预测' },
+    { ts: now - 2000, source: 'c', title: '贵州茅台三季度净利增长15%', summary: '黄金市场资金面' },
+    { ts: now - 3000, source: 'd', title: '宁德时代三季度净利增长12%', summary: '黄金市场资金面' },
+  ], now, null);
+  assert.equal(distinct.length, 4, `distinct stories stay: ${distinct.map(x => x.title).join(' | ')}`);
+});
+
 test('live cngold snapshot parses with per-item dates (selector drift guard)', () => {
   const items = parseHtmlList(fixture('cngold-live.html'), feed('中国黄金协会').spec);
   assert.ok(items.length >= 40, `matched=${items.length}`);

@@ -205,6 +205,26 @@ test('stale factors are flagged in the summary', async () => {
   assert.ok(text.includes('美元指数 数据不可用'), 'missing factor stated');
 });
 
+test('最新资讯 card lists news newest-first (dated before estimated)', async () => {
+  const now = Date.now();
+  const state = {
+    ...fakeState,
+    news: [
+      { ts: now - 48 * 3600_000, title: '旧闻高分', score: 5, source: 'a', tsEstimated: false },
+      { ts: now - 1 * 3600_000, title: '今天新闻', score: 2, source: 'b', tsEstimated: false },
+      { ts: now, title: '估时新闻', score: 3, source: 'c', tsEstimated: true },
+    ],
+  };
+  const api = await loadClient(state);
+  const text = JSON.stringify(renderPage(applyAndCapture(api)));
+  const iNew = text.indexOf('今天新闻');
+  const iOld = text.indexOf('旧闻高分');
+  const iEst = text.indexOf('估时新闻');
+  assert.ok(iNew >= 0 && iOld >= 0 && iEst >= 0, 'all three rendered');
+  assert.ok(iNew < iOld, `newer dated item first (new=${iNew}, old=${iOld})`);
+  assert.ok(iOld < iEst, `estimated-ts item last (est=${iEst})`);
+});
+
 test('only the latest reflection is rendered', async () => {
   const state = {
     ...fakeState,
