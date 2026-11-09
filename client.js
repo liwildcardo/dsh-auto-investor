@@ -108,6 +108,8 @@ window.__ModuleLoader__.load({
       .ai-table { width: 100%; border-collapse: collapse; font-size: 12px; }
       .ai-table th { text-align: left; color: var(--dsw-alias-label-secondary);
         font-weight: 600; font-size: 11px; padding: 8px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+      /* Numeric columns right-align in data, so their headers must too. */
+      .ai-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
       .ai-table td { padding: 9px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1);
         font-variant-numeric: tabular-nums; }
       .ai-table tbody tr:nth-child(even) { background: var(--dsw-alias-bg-layer-2); }
@@ -406,9 +408,20 @@ window.__ModuleLoader__.load({
         : '--';
       const fx = state.fx?.rate;
 
-      const table = (head, rows) => h('table', { className: 'ai-table' },
-        h('thead', null, h('tr', null, head.map(x => h('th', { key: x }, x)))),
-        h('tbody', null, rows));
+      // Column alignment follows the data: a column whose cells carry `num`
+      // right-aligns, and its header must too (headers used to stay left while
+      // values sat right — the header/value misalignment users saw).
+      const table = (head, rows) => {
+        const numCol = head.map((_, i) => rows.some((tr) => {
+          const td = Array.isArray(tr?.children) ? tr.children[i] : null;
+          return td != null && typeof td === 'object'
+            && /\bnum\b/.test(td.props?.className ?? '');
+        }));
+        return h('table', { className: 'ai-table' },
+          h('thead', null, h('tr', null, head.map((x, i) =>
+            h('th', { key: x, className: numCol[i] ? 'num' : null }, x)))),
+          h('tbody', null, rows));
+      };
       const card = (accent, title, right, children) => h('div', { className: `ai-card ai-acc-${accent}` },
         h(Section, { accent, title, right }),
         h('div', { className: 'ai-body' }, ...children));

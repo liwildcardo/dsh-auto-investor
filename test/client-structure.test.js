@@ -195,6 +195,30 @@ test('estimated news dates render as 约 instead of 日期未知', async () => {
   assert.ok(!text.includes('日期未知'), 'no blank unknown dates');
 });
 
+test('table headers align with their data columns (numeric right, rest left)', async () => {
+  const api = await loadClient(fakeState);
+  const tree = renderPage(applyAndCapture(api));
+  const ths = findTree(tree, n => n.type === 'th');
+  const byLabel = {};
+  for (const th of ths) {
+    const label = Array.isArray(th.children) ? th.children.join('') : String(th.children ?? '');
+    byLabel[label] = th.props.className ?? null;
+  }
+  // Positions: 标的/名称 left, 数量/成本/现价/盈亏 right.
+  assert.equal(byLabel['标的'], null, 'code column header left-aligned');
+  assert.equal(byLabel['名称'], null, 'name column header left-aligned');
+  assert.equal(byLabel['数量'], 'num', 'qty header right-aligned with its values');
+  assert.equal(byLabel['成本'], 'num', 'cost header right-aligned');
+  assert.equal(byLabel['现价'], 'num', 'price header right-aligned');
+  assert.equal(byLabel['盈亏'], 'num', 'pnl header right-aligned');
+  // Trades: 时间/方向/标的/名称 left, 价格/金额 right.
+  assert.equal(byLabel['时间'], null, 'time header left-aligned');
+  assert.equal(byLabel['方向'], null, 'side header left-aligned');
+  assert.equal(byLabel['价格'], 'num', 'trade price header right-aligned');
+  assert.equal(byLabel['金额'], 'num', 'trade amount header right-aligned');
+  assert.equal(ths.filter(th => th.props.className === 'num').length, 6, '4 position + 2 trade numeric columns');
+});
+
 test('gold (single) shows no watchlist card or chart switcher', async () => {
   const api = await loadClient(fakeState);
   const text = JSON.stringify(renderPage(applyAndCapture(api)));
