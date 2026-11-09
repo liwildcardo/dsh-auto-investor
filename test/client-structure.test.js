@@ -9,7 +9,13 @@ function loadClient(fakeState = undefined) {
   let captured = null;
   globalThis.window = { __ModuleLoader__: { load(mod) { captured = mod; } } };
   return import(`../client.js?t=${Date.now()}-${Math.random()}`).then(() => {
-    const makeEl = (type, props, ...children) => ({ type, props: props ?? {}, children });
+    // Mimic real React: children live on props.children (elements never carry
+    // a top-level children field). findTree reads the mirrored top-level copy.
+    const makeEl = (type, props, ...children) => ({
+      type,
+      props: { ...(props ?? {}), children },
+      children,
+    });
     let firstNull = true;
     const React = {
       createElement: makeEl,
@@ -198,10 +204,14 @@ test('estimated news dates render as 约 instead of 日期未知', async () => {
 test('table headers align with their data columns (numeric right, rest left)', async () => {
   const api = await loadClient(fakeState);
   const tree = renderPage(applyAndCapture(api));
+  // Prove the test double matches real React: rows keep children on props.
+  const rows0 = findTree(tree, n => n.type === 'tr' && Array.isArray(n.props?.children) && n.props.children.length === 6);
+  assert.ok(rows0.length > 0, 'row elements expose props.children (real React shape)');
   const ths = findTree(tree, n => n.type === 'th');
   const byLabel = {};
   for (const th of ths) {
-    const label = Array.isArray(th.children) ? th.children.join('') : String(th.children ?? '');
+    const kids = Array.isArray(th.props?.children) ? th.props.children : [th.props?.children];
+    const label = kids.filter(c => typeof c === 'string').join('');
     byLabel[label] = th.props.className ?? null;
   }
   // Positions: 标的/名称 left, 数量/成本/现价/盈亏 right.

@@ -408,12 +408,20 @@ window.__ModuleLoader__.load({
         : '--';
       const fx = state.fx?.rate;
 
+      // Real React elements carry children at props.children (never top-level);
+      // read that first, fall back to the test double's shape.
+      const kidsOf = (el) => {
+        if (el == null) return [];
+        const c = el.props?.children ?? el.children;
+        if (Array.isArray(c)) return c;
+        return c == null ? [] : [c];
+      };
       // Column alignment follows the data: a column whose cells carry `num`
       // right-aligns, and its header must too (headers used to stay left while
       // values sat right — the header/value misalignment users saw).
       const table = (head, rows) => {
         const numCol = head.map((_, i) => rows.some((tr) => {
-          const td = Array.isArray(tr?.children) ? tr.children[i] : null;
+          const td = kidsOf(tr)[i];
           return td != null && typeof td === 'object'
             && /\bnum\b/.test(td.props?.className ?? '');
         }));
