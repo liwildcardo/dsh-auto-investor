@@ -48,6 +48,16 @@ export async function fetchQuotes(fetchFn, symbols, timeoutMs = 8000) {
 const SEARCH_MARKET = { ashare: ['sh', 'sz'], us: ['us'], hk: ['hk'] };
 
 /**
+ * Tencent smartbox returns names as JS-style escapes (e.g. 腾控
+ * = 腾讯控股). Decode \uXXXX and \" so the UI shows real text.
+ */
+function decodeSmartboxName(s) {
+  return String(s)
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\"/g, '"');
+}
+
+/**
  * Parse Tencent smartbox results (`v_hint="sh~000847~name~pinyin~type^..."`).
  * Returns [{symbol, name, market}] filtered to one product's markets.
  */
@@ -55,7 +65,8 @@ export function parseSmartbox(text, productId) {
   const allowed = SEARCH_MARKET[productId];
   if (!allowed) return [];
   const out = [];
-  const m = String(text ?? '').match(/v_hint="([^"]*)"/);
+  // ((?:[^"\\]|\\.)*) keeps names containing escaped quotes intact.
+  const m = String(text ?? '').match(/v_hint="((?:[^"\\]|\\.)*)"/);
   if (!m) return out;
   for (const entry of m[1].split('^')) {
     const [market, code, name] = entry.split('~');
@@ -63,7 +74,7 @@ export function parseSmartbox(text, productId) {
     if (!allowed.includes(market)) continue;
     // US quote symbols are case-sensitive (ustcehy does not resolve).
     const symbol = market === 'us' ? `us${code.toUpperCase()}` : `${market}${code}`;
-    out.push({ symbol, name: name.trim(), market });
+    out.push({ symbol, name: decodeSmartboxName(name).trim(), market });
     if (out.length >= 8) break;
   }
   return out;

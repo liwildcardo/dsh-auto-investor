@@ -97,6 +97,22 @@ test('parseSmartbox keeps names and filters foreign markets (string level)', () 
   assert.equal(parseSmartbox(text, 'gold').length, 0, 'gold has no search market');
 });
 
+test('parseSmartbox decodes \\uXXXX-escaped names from the live API', () => {
+  // The real smartbox payload escapes non-ASCII (腾=817E 讯=8BAF 控=63A7 股=80A1).
+  const text = 'v_hint="hk~00700~\\u817e\\u8baf\\u63a7\\u80a1~txkg~GP^hk~09988~\\u963f\\u91cc\\u5df4\\u5df4~tbab~GP"';
+  const hk = parseSmartbox(text, 'hk');
+  assert.equal(hk.length, 2);
+  assert.equal(hk[0].name, '腾讯控股', 'escapes decoded to real characters');
+  assert.equal(hk[1].name, '阿里巴巴');
+});
+
+test('parseSmartbox tolerates escaped quotes inside a name', () => {
+  const text = 'v_hint="hk~00700~\\u8d22\\u62a5\\"\\u70b9\\u8bc4~txkg~GP"';
+  const hk = parseSmartbox(text, 'hk');
+  assert.equal(hk.length, 1, 'escaped quote does not truncate the payload');
+  assert.ok(hk[0].name.includes('"'));
+});
+
 test('engine candidates and history follow the edited pool', async (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-wle-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
