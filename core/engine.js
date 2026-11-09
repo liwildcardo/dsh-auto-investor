@@ -88,6 +88,22 @@ export function createProductEngine({
         changed = true;
       }
     }
+    // Signal lists are frozen at version creation, but signals ADDED to the
+    // product contract afterwards (e.g. batch-E factors) must join the ACTIVE
+    // version — otherwise new factors never evaluate until the next fork.
+    // Retired versions keep the list they actually ran with.
+    const active = versions[versions.length - 1];
+    if (active?.strategy?.signals) {
+      const have = new Set(active.strategy.signals.map(s => s.id));
+      const missing = (cfg.strategy.signals ?? []).filter(s => !have.has(s.id));
+      if (missing.length) {
+        active.strategy.signals = [
+          ...active.strategy.signals,
+          ...missing.map(s => ({ ...s, params: { ...(s.params ?? {}) } })),
+        ];
+        changed = true;
+      }
+    }
     if (changed) persist();
   }
   normalizeVersions();
@@ -775,7 +791,7 @@ export function createProductEngine({
       series,
       chartSymbol: watchSymbol,
       benchmark: benchmarkView(),
-      factors,
+      factors: readFactors(db), // fresh from the shared cache (all products see it)
       watchlist: pool(),
       fx: cfg.currency === 'CNY' ? null : fxRate,
       ingest: lastIngest,
