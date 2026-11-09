@@ -355,7 +355,7 @@ window.__ModuleLoader__.load({
         setBusy(true);
         setNotice(null);
         try {
-          const res = await fetch('/api/auto-investor/watchlist', {
+          const res = await fetch('/api/auto-investor/watchlist/edit', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ ...body, product: productId }),

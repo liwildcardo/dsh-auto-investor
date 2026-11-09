@@ -42,23 +42,23 @@ test('watchlist routes: read defaults, add, remove, reset with validation', asyn
   assert.equal(first.status, 200);
   assert.equal(first.body.watchlist.length, 6, 'HK defaults served');
 
-  const add = await call('/api/auto-investor/watchlist', 'POST', { product: 'hk', action: 'add', symbol: 'hk00288', name: '银河娱乐' });
+  const add = await call('/api/auto-investor/watchlist/edit', 'POST', { product: 'hk', action: 'add', symbol: 'hk00288', name: '银河娱乐' });
   assert.equal(add.status, 200);
   assert.equal(add.body.ok, true);
   assert.equal(add.body.watchlist.length, 7);
 
-  const badPrefix = await call('/api/auto-investor/watchlist', 'POST', { product: 'hk', action: 'add', symbol: 'sh600519' });
+  const badPrefix = await call('/api/auto-investor/watchlist/edit', 'POST', { product: 'hk', action: 'add', symbol: 'sh600519' });
   assert.equal(badPrefix.status, 400, 'wrong-market code rejected');
   assert.match(badPrefix.body.error, /格式不符/);
 
-  const dup = await call('/api/auto-investor/watchlist', 'POST', { product: 'hk', action: 'add', symbol: 'hk00288' });
+  const dup = await call('/api/auto-investor/watchlist/edit', 'POST', { product: 'hk', action: 'add', symbol: 'hk00288' });
   assert.equal(dup.status, 400);
 
-  const rm = await call('/api/auto-investor/watchlist', 'POST', { product: 'hk', action: 'remove', symbol: 'hk00288' });
+  const rm = await call('/api/auto-investor/watchlist/edit', 'POST', { product: 'hk', action: 'remove', symbol: 'hk00288' });
   assert.equal(rm.status, 200);
   assert.equal(rm.body.watchlist.length, 6);
 
-  const reset = await call('/api/auto-investor/watchlist', 'POST', { product: 'hk', action: 'reset' });
+  const reset = await call('/api/auto-investor/watchlist/edit', 'POST', { product: 'hk', action: 'reset' });
   assert.equal(reset.status, 200);
   assert.equal(reset.body.watchlist.length, 6);
 
