@@ -51,6 +51,12 @@ test('factor fetch caches for 26h and failures fall back to the cache', async (t
   const fetchFn = async (url) => {
     calls += 1;
     if (fail) throw new Error('network down');
+    if (String(url).includes('push2his')) {
+      return { ok: true, json: async () => ({ data: { klines: ['2026-11-03,2.60,2.66', '2026-11-04,2.66,2.58'] } }) };
+    }
+    if (String(url).includes('frankfurter')) {
+      return { ok: true, json: async () => ({ rates: { '2026-11-03': { EUR: 0.85, JPY: 150, GBP: 0.75, CAD: 1.37, SEK: 10.7, CHF: 0.88 } } }) };
+    }
     if (String(url).includes('push2.eastmoney.com')) {
       return { ok: true, json: async () => ({ data: { f43: 26190, f86: Math.floor(clock / 1000) } }) };
     }
@@ -61,7 +67,7 @@ test('factor fetch caches for 26h and failures fall back to the cache', async (t
   assert.ok(calls >= 1, 'initial fetch happened');
   assert.ok(Math.abs(first.realYield.value - 2.619) < 1e-9, 'scaled value');
   assert.equal(first.realYield.stale, false, 'fresh data');
-  assert.equal(first.realYield.delta5d, null, 'needs ≥2 observations');
+  assert.ok(Number.isFinite(first.realYield.delta5d), 'seeded on first collect → delta available');
 
   // Second collect within 26h: no refetch.
   await collectFactors(fetchFn, db, now);
