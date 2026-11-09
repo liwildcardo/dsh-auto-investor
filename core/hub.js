@@ -34,6 +34,7 @@ export function createHub({ engines, products, fetchFn = undefined }) {
     versions: (pid) => pick(pid).status().versions,
     watchlist: (pid) => pick(pid).watchlist(),
     watchlistAction: (pid, body) => pick(pid).watchlistAction(body),
+    backtest: (pid, symbol) => pick(pid).runBacktest(symbol),
     search: async (pid, q) => {
       if (typeof fetchFn !== 'function') return [];
       const product = products.find(x => x.id === (pid ?? pids()[0])) ?? products[0];

@@ -10,6 +10,7 @@ import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
 import { fetchDailyHistory, fetchMinuteHistory, fetchFxRate } from './quotes.js';
 import { loadWatchlist, addToWatchlist, removeFromWatchlist, resetWatchlist } from './watchlist.js';
+import { runBacktest as runBacktestCore } from './backtest.js';
 
 const DEFAULT_SERIES = 240;
 
@@ -886,6 +887,25 @@ export function createProductEngine({
     return lastIngest;
   }
 
+  /** Offline check: replay the current signals over the product's signal bars. */
+  function runBacktestFor(symbol) {
+    const sym = symbol ?? pool()[0]?.symbol ?? product.id;
+    const risk = effectiveRisk();
+    const result = runBacktestCore({
+      bars: barsFor(sym),
+      signals: activeSignals(),
+      threshold: cfg.strategy.candidates?.threshold ?? 0.8,
+      stopLossPct: risk.stopLossPct ?? -5,
+      takeProfitPct: risk.takeProfitPct ?? 10,
+    });
+    return jsonSafe({
+      symbol: sym,
+      barInterval: cfg.strategy?.barInterval ?? '1d',
+      version: current().id,
+      ...result,
+    });
+  }
+
   /** Editable watchlist: add/remove/reset one product's pool. */
   function watchlistAction({ action, symbol, name } = {}) {
     const res = action === 'remove'
@@ -906,6 +926,7 @@ export function createProductEngine({
     ingestNews,
     watchlist: () => pool(),
     watchlistAction,
+    runBacktest: (symbol) => runBacktestFor(symbol),
     listNews: (limit) => (typeof newsList === 'function' ? newsList(limit) : []),
     /** Signal bars for tests/backtest: resampled to the product's horizon. */
     signalBars: (symbol, interval) => barsFor(symbol, interval),
