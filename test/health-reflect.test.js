@@ -155,6 +155,16 @@ test('health reflection: shrink-only lookback fixes bypass the sample floor', as
   // (prompt content asserted indirectly: params beyond shrink were rejected per health rules)
 });
 
+test('decision journal preserves signal notes so coverage can count abstentions', async (t) => {
+  const { engine, db } = harness(t, {});
+  await engine.runCycle(); // fallback hold (llm returns '{}') still journals signals
+  const dec = db.getState('product:hlth:decisions') ?? [];
+  assert.ok(dec.length >= 1, 'a decision was journaled');
+  const inner = dec.at(-1).signals?.[0]?.signals ?? [];
+  assert.ok(inner.length > 0, 'inner signals present');
+  assert.ok('note' in inner[0], `note preserved for coverage: ${JSON.stringify(inner[0])}`);
+});
+
 test('status exposes health; client renders the health line', async (t) => {
   const journal = Array.from({ length: 25 }, () => entry({
     rejection: '标的不在候选或持仓中',

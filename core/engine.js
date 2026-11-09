@@ -704,7 +704,14 @@ export function createProductEngine({
       signalsSnapshot = scored.map(s => ({
         symbol: s.symbol,
         score: s.score,
-        signals: (s.signals ?? []).map(x => ({ id: x.id, score: x.score })),
+        // Keep note/noData: health coverage counts "数据不足" abstentions, and
+        // the health prompt must see WHY a signal scored 0.
+        signals: (s.signals ?? []).map(x => ({
+          id: x.id,
+          score: x.score,
+          ...(x.note ? { note: x.note } : {}),
+          ...(x.noData ? { noData: true } : {}),
+        })),
       }));
       const ctx = {
         market: { price: quote, ts: quoteTs, currency: cfg.currency },
