@@ -34,6 +34,7 @@ function makeProduct(plan, extra = {}) {
         decision: {},
         evolvable: [],
         ...(plan !== undefined ? { plan } : {}),
+        ...(extra.signals ? { signals: extra.signals } : {}),
       },
       rules: {
         unit: 'share', lotSize: 100, settlement: 'T+0', fees: {},
@@ -141,7 +142,9 @@ test('the active version adopts signals added to the product contract later', (t
     { id: 1, createdAt: 1, strategy: { signals: [{ id: 'trend' }], risk: {}, plan: { maxTradesPerDay: 2, minIntervalHours: 4 } }, startPnl: 0, retired: true },
     { id: 2, createdAt: 2, strategy: { signals: [{ id: 'trend' }], risk: {}, plan: { maxTradesPerDay: 2, minIntervalHours: 4 } }, startPnl: 0, retired: false },
   ]);
-  const { product } = makeProduct(undefined);
+  const { product } = makeProduct(undefined, {
+    signals: [{ id: 'trend' }, { id: 'momentum' }, { id: 'rsi' }],
+  });
   const engine = createProductEngine({
     db, product, fetchFn: async () => ({ ok: true }), llm: async () => '{}', now: () => OPEN,
   });
