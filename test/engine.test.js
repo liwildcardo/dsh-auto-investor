@@ -51,17 +51,18 @@ function makeProduct(overrides = {}) {
       fees: { commissionRate: 0.00025, commissionMin: 5 },
       priceLimit: 10, boardLimitPct: 10,
       sessions: [[570, 690], [780, 900]], holidays: [],
+      ...(overrides.rules ?? {}),
     },
     risk: { perTrade: 10000, perSymbolPct: 25, dailyLossPct: -50, stopLossPct: -5, takeProfitPct: 10, minConfidence: 0.55 },
   });
   return { product, state };
 }
 
-function makeEngine(t, { llm, clock = () => OPEN, settlement } = {}) {
+function makeEngine(t, { llm, clock = () => OPEN, settlement, rules } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'ai-eng-'));
   const db = openDb(join(dir, 'x.db'), { backend: 'json' });
   t.after(() => db.close());
-  const { product, state } = makeProduct({ settlement });
+  const { product, state } = makeProduct({ settlement, rules });
   const engine = createProductEngine({
     db, product, fetchFn: async () => ({ ok: true }),
     llm: llm ?? (async () => JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 })),
@@ -177,11 +178,17 @@ test('evolved risk parameters drive the stop-loss gate', async (t) => {
 });
 
 test('per-symbol and total exposure caps are independent', async (t) => {
+  // Full-day session so the 2h hard buy-gap fits inside trading hours.
+  let clock = OPEN;
   const { engine } = makeEngine(t, {
     llm: async () => JSON.stringify({ action: 'buy', symbol: 'x', amount: 10000, confidence: 0.9 }),
+    clock: () => clock,
+    rules: { sessions: [[570, 1560]] },
   });
   assert.equal((await engine.runCycle()).trades.length, 1, 'first fill within the per-symbol cap');
+  clock += 2 * 3600_000 + 60_000;
   assert.equal((await engine.runCycle()).trades.length, 1, 'second fill still under 25%');
+  clock += 2 * 3600_000 + 60_000;
   const third = await engine.runCycle();
   assert.equal(third.trades.length, 0, 'third fill would exceed the per-symbol cap');
   assert.match(third.rejection ?? '', /单标的敞口/);

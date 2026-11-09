@@ -406,20 +406,19 @@ export function createProductEngine({
     const prevClose = prevCloseOf(symbol);
     if (!withinPriceBand(cfg.rules, prevClose, price, symbol)) return { ok: false, reason: '超出涨跌停价格区间' };
 
-    // Frequency discipline: version plan (or the product default when a fork
-    // lost it) bounded by hard caps — a missing/permissive plan can never
-    // loosen the ceiling or zero the interval.
-    const dayTrades = tradesToday();
+    // Frequency discipline applies to ENTRIES only: risk/LLM sells reduce
+    // exposure and must never be blocked by churn controls.
     const plan = { ...(cfg.strategy?.plan ?? {}), ...(current().strategy?.plan ?? {}) };
     const hardMax = cfg.rules?.hardMaxTradesPerDay ?? risk.maxTradesPerDay ?? 3;
     const hardGapH = cfg.rules?.hardMinIntervalHours ?? 0;
     const maxPerDay = Math.min(plan.maxTradesPerDay ?? hardMax, hardMax);
-    if (dayTrades.length >= maxPerDay) return { ok: false, reason: `已达每日交易上限(${maxPerDay})` };
     const minGap = Math.max(plan.minIntervalHours ?? 0, hardGapH) * 3600_000;
-    const lastTrade = dayTrades[0];
-    if (lastTrade && now() - lastTrade.ts < minGap) return { ok: false, reason: '未达最小交易间隔' };
 
     if (decision.action === 'buy') {
+      const buysToday = tradesToday().filter(t => t.side === 'buy');
+      if (buysToday.length >= maxPerDay) return { ok: false, reason: `已达每日交易上限(${maxPerDay})` };
+      const lastBuy = buysToday[0];
+      if (lastBuy && now() - lastBuy.ts < minGap) return { ok: false, reason: '未达最小交易间隔' };
       const qty = buyQuantity(decision, symbol, price);
       if (!(qty > 0)) return { ok: false, reason: '数量不足一手' };
       const notional = qty * price;
