@@ -102,7 +102,7 @@ async function getFredSeries(fetchFn, db, id, now) {
       fetchedAt: 0,
       error: String(e?.message ?? e).slice(0, 160),
       errorMs: Date.now() - started, // how long the attempt took (diagnosis)
-      errorAt: new Date(started + 8 * 3600_000).toISOString(),
+      errorAt: new Date(started).toISOString(),
     };
     try { db.putState(key, entry); } catch { /* best effort */ }
     return cached ?? entry;

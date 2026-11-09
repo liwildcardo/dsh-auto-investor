@@ -9,6 +9,7 @@ import { registerTools } from './lib/tools.js';
 import { registerRoutes } from './lib/routes.js';
 import { collectStream } from './lib/llm.js';
 import { normalizeWebSearch } from './lib/news.js';
+import { makeRoutingFetch } from './lib/fallback-fetch.js';
 import { loadProducts, mergeProduct } from './core/registry.js';
 import { createProductEngine } from './core/engine.js';
 import { createProductNews } from './core/news-service.js';
@@ -82,10 +83,11 @@ export function apply(ctx, config) {
     }), { timeoutMs: 90_000 });
   }
 
-  const fetchFn = (url, opts) => globalThis.fetch(url, opts);
-
-  // Optional web-search enrichment; the plugin stays functional without it.
+  // Optional web service: used for search enrichment AND as the fetch path
+  // for origins that stall under the plugin's direct fetch (FRED).
   const web = ctx.get('web');
+  const fetchFn = makeRoutingFetch((url, opts) => globalThis.fetch(url, opts), web);
+
   const searchFn = web
     ? async (queries) => {
       const items = [];
