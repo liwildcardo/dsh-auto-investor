@@ -127,10 +127,14 @@ export function createProductEngine({
   async function tick() {
     const raw = await product.market.quote(fetchFn, cfg);
     quoteTs = now();
+    // Day-open baselines are only recorded while the market is actually open:
+    // the first in-session tick is the session open, a midnight/closed tick is
+    // a stale quote that must not become "today's" baseline.
+    const sessionOpen = isSessionOpen(cfg.rules, now(), cfg.timezone);
     if (product.market.kind === 'single') {
       quote = raw;
       db.insertTick({ ts: quoteTs, mid: raw.price, buy: raw.buy, sell: raw.sell, product: product.id });
-      recordDayOpen({ [raw.symbol ?? product.id]: raw.price });
+      if (sessionOpen) recordDayOpen({ [pool()[0]?.symbol ?? product.id]: raw.price });
     } else {
       quote = Object.fromEntries(raw.quotes.map(q => [q.symbol, q]));
       for (const q of raw.quotes) {
@@ -139,7 +143,7 @@ export function createProductEngine({
           price: q.price, open: q.open, volume: q.volume,
         });
       }
-      recordDayOpen(Object.fromEntries(raw.quotes.map(q => [q.symbol, q.price])));
+      if (sessionOpen) recordDayOpen(Object.fromEntries(raw.quotes.map(q => [q.symbol, q.price])));
     }
     await seedHistory().catch(() => {});
     await refreshFx().catch(() => {});
@@ -174,14 +178,50 @@ export function createProductEngine({
     return zonedParts(now(), product.timezone).date;
   }
 
+  /** Epoch of today's (session-date) session start: local midnight + sessions[0].start. */
+  function sessionStartMs() {
+    const z = zonedParts(now(), cfg.timezone);
+    const elapsed = (z.hour * 3600 + z.minute * 60 + z.second) * 1000 + (now() % 1000);
+    const midnight = now() - elapsed;
+    return midnight + (cfg.rules?.sessions?.[0]?.[0] ?? 0) * 60_000;
+  }
+
+  /**
+   * The session's true open: the earliest recorded price at/after the session
+   * start. Null when the session has no ticks yet (or hasn't started).
+   */
+  function sessionOpenPrice(symbol) {
+    const dayStart = sessionStartMs();
+    if (dayStart > now()) return null; // session hasn't started (cross-midnight case)
+    if (product.market.kind === 'single') {
+      const ticks = db.latestTicksByProduct(product.id, 5000);
+      const first = ticks.find(t => t.ts >= dayStart && Number.isFinite(t.price));
+      return first?.price ?? null;
+    }
+    const rows = db.listPoints(product.id, symbol, 3000);
+    const first = rows.find(p => p.ts >= dayStart && Number.isFinite(p.price));
+    return first?.price ?? null;
+  }
+
+  /**
+   * Resolve and persist one symbol's day-open baseline.
+   * Trusted records are `{price, at}` objects written while a session was
+   * open; legacy plain numbers (recorded at midnight against a closed market)
+   * are re-resolved from the first in-session tick.
+   */
   function recordDayOpen(prices) {
     const key = pkey(`dayOpen:${sessionDate()}`);
-    const existing = db.getState(key);
-    if (!existing) {
-      db.putState(key, prices);
-      return prices;
+    const map = db.getState(key) ?? {};
+    let changed = !db.getState(key);
+    for (const [sym, current] of Object.entries(prices)) {
+      const rec = map[sym];
+      if (rec != null && typeof rec === 'object' && Number.isFinite(rec.price)) continue; // trusted
+      const fromHistory = sessionOpenPrice(sym);
+      map[sym] = { price: fromHistory ?? (typeof rec === 'number' ? rec : current), at: now() };
+      changed = true;
     }
-    return existing;
+    if (changed) db.putState(key, map);
+    return map;
   }
 
   function seriesFor(symbol, limit = DEFAULT_SERIES) {
@@ -306,7 +346,12 @@ export function createProductEngine({
   }
 
   function dayOpenPrices() {
-    return db.getState(pkey(`dayOpen:${sessionDate()}`)) ?? {};
+    const map = db.getState(pkey(`dayOpen:${sessionDate()}`)) ?? {};
+    const out = {};
+    for (const [k, v] of Object.entries(map)) {
+      out[k] = v != null && typeof v === 'object' ? v.price : v; // legacy numbers pass through
+    }
+    return out;
   }
 
   function dailyLossHit() {
@@ -735,7 +780,7 @@ export function createProductEngine({
     listNews: (limit) => (typeof newsList === 'function' ? newsList(limit) : []),
     get quote() { return quote; },
     get account() { return account; },
-    snapshot: () => snapshotOf(account, priceOf),
+    snapshot: () => snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null),
     pause: (v) => { paused = v === undefined ? !paused : !!v; persist(); return paused; },
     get paused() { return paused; },
   };

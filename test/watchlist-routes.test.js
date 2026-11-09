@@ -72,13 +72,15 @@ test('search route filters by market and normalizes US casing', async (t) => {
   const smartbox = 'v_hint="sh~000847~TENCENT-JA~txja~ZS^hk~00700~TENCENT~txkg~GP^us~tcehy~TENCENT-ADR~txkgadr~GP^us~aapl~APPLE~aapl~GP"';
   const fetchFn = async (url) => {
     assert.match(String(url), /smartbox\.gtimg\.cn/);
-    return { ok: true, arrayBuffer: async () => Buffer.from(smartbox, 'utf8').buffer };
+    // Exact-size ArrayBuffer: Buffer.from(str).buffer may expose a shared pool
+    // holding other module sources (whose docs even contain a v_hint example).
+    return { ok: true, arrayBuffer: async () => new TextEncoder().encode(smartbox).buffer };
   };
   const { call } = hubHarness(t, { fetchFn, enabled: ['hk', 'us'] });
 
   const hk = await call('/api/auto-investor/search', 'GET', undefined, '?product=hk&q=%E8%85%BE%E8%AE%AF');
   assert.equal(hk.status, 200);
-  assert.equal(hk.body.results.length, 1, 'HK search only returns hk-listed entries');
+  assert.equal(hk.body.results.length, 1, `HK search only returns hk-listed entries: ${JSON.stringify(hk.body)}`);
   assert.equal(hk.body.results[0].symbol, 'hk00700');
 
   const us = await call('/api/auto-investor/search', 'GET', undefined, '?product=us&q=tcehy');

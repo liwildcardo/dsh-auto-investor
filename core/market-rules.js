@@ -7,13 +7,13 @@
 export function zonedParts(ts, timeZone) {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, weekday: 'short',
   });
   const p = Object.fromEntries(fmt.formatToParts(new Date(ts)).map(x => [x.type, x.value]));
   const hour = p.hour === '24' ? '00' : p.hour;
   return {
     year: Number(p.year), month: Number(p.month), day: Number(p.day),
-    hour: Number(hour), minute: Number(p.minute),
+    hour: Number(hour), minute: Number(p.minute), second: Number(p.second ?? 0),
     weekday: p.weekday, date: `${p.year}-${p.month}-${p.day}`,
     minutes: Number(hour) * 60 + Number(p.minute),
   };

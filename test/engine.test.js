@@ -187,6 +187,63 @@ test('per-symbol and total exposure caps are independent', async (t) => {
   assert.match(third.rejection ?? '', /单标的敞口/);
 });
 
+test('single product keys day-open by the position symbol (today pnl non-zero)', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'ai-dok-'));
+  const db = openDb(join(dir, 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const state = { price: 885 };
+  const product = normalizeProduct({
+    id: 'goldx', name: 'GOLDX', currency: 'CNY', timezone: 'Asia/Shanghai',
+    capital: { initialRmb: 100000, maxExposureRmb: 100000 },
+    market: {
+      kind: 'single',
+      async quote() {
+        const p = state.price;
+        return { price: p, buy: p + 2.5, sell: p - 2.5, ts: Date.now(), currency: 'CNY' };
+      },
+    },
+    universe: { watchlist: () => [{ symbol: 'AU9999', name: '黄金', lot: 1 }], lotSize: 1 },
+    news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
+    strategy: { indicators: [], signals: [{ id: 'trend' }], candidates: { threshold: 0.8 }, plan: {}, prompt: {}, decision: {}, evolvable: [] },
+    rules: { unit: 'gram', lotSize: 1, settlement: 'T+0', fees: {}, sessions: [[550, 1560]], holidays: [] },
+    risk: { perTrade: 5000, perSymbolPct: 100, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50, dailyLossPct: -99 },
+  });
+  let llmOut = JSON.stringify({ action: 'buy', symbol: 'AU9999', amount: 5000, confidence: 0.9 });
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => llmOut, now: () => OPEN, // Friday 10:00 Shanghai, session open
+  });
+  await engine.runCycle(); // records day-open at 885 under AU9999, buys
+  const qty = engine.snapshot().positions[0].qty;
+  assert.ok(qty > 0, 'position opened');
+  state.price = 895; // +10 from the session open
+  llmOut = JSON.stringify({ action: 'hold', confidence: 0.6 });
+  await engine.runCycle();
+  const snap = engine.snapshot();
+  assert.ok(Math.abs(snap.todayPnl - 10 * qty) < 0.01,
+    `today pnl = (895-885)×qty, got ${snap.todayPnl}`);
+});
+
+test('day-open is not recorded while the session is closed', async (t) => {
+  const { engine, db } = makeEngine(t, { clock: () => LUNCH }); // A-share lunch break
+  await engine.tick();
+  assert.equal(db.getState('product:test:dayOpen:2026-11-06'), null,
+    'closed session must not create a day-open baseline');
+});
+
+test('legacy numeric day-open baseline is re-resolved from session history', async (t) => {
+  const { engine, db, state } = makeEngine(t, { clock: () => OPEN }); // 10:00, session open
+  // Legacy format recorded a stale closed-market price under the symbol.
+  db.putState('product:test:dayOpen:2026-11-06', { x: 999 });
+  // True session open (first tick after 09:30) already exists in history.
+  db.insertPoint({ ts: OPEN + 60_000, product: 'test', symbol: 'x', price: 4090, volume: 1 });
+  await engine.tick();
+  const rec = db.getState('product:test:dayOpen:2026-11-06');
+  assert.equal(typeof rec.x, 'object', 'baseline upgraded to the trusted shape');
+  assert.equal(rec.x.price, 4090, 're-resolved from the first in-session tick');
+  assert.equal(state.price, 10, 'quote untouched by the probe');
+});
+
 test('close statistics feed the reflection (win rate, drawdown)', async (t) => {
   let action = { action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 };
   let price = 10;
