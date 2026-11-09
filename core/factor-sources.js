@@ -89,8 +89,17 @@ async function getFredSeries(fetchFn, db, id, now) {
     const entry = { values, asOf: values[values.length - 1].date, fetchedAt: now() };
     db.putState(key, entry);
     return entry;
-  } catch {
-    return cached ?? null; // degrade: last known values, else factor unavailable
+  } catch (e) {
+    // Record the failure for observability (status.factors shows `error`),
+    // but keep fetchedAt at 0 so the NEXT cycle retries instead of waiting 26h.
+    const entry = {
+      values: cached?.values ?? [],
+      asOf: cached?.asOf ?? null,
+      fetchedAt: 0,
+      error: String(e?.message ?? e).slice(0, 160),
+    };
+    try { db.putState(key, entry); } catch { /* best effort */ }
+    return cached ?? entry;
   }
 }
 
