@@ -67,6 +67,14 @@ export function createProductEngine({
       if (!v.strategy.risk || Object.keys(v.strategy.risk).length === 0) {
         v.strategy.risk = { ...(cfg.risk ?? {}) };
         changed = true;
+      } else {
+        // Fill keys added to the contract after this version was forked
+        // (evolved values win; new defaults fill the gaps).
+        const merged = { ...(cfg.risk ?? {}), ...v.strategy.risk };
+        if (Object.keys(merged).length !== Object.keys(v.strategy.risk).length) {
+          v.strategy.risk = merged;
+          changed = true;
+        }
       }
       // Versions forked before plan-preservation lost the frequency plan; the
       // engine would then fall back to the loosest limits — restore the
@@ -79,6 +87,14 @@ export function createProductEngine({
     if (changed) persist();
   }
   normalizeVersions();
+
+  // One-time benchmark backfill: fills that happened before the benchmark
+  // existed never seeded it — take the product's first recorded buy.
+  if (!db.getState(pkey('benchmark'))) {
+    const buys = db.listTradesByProduct(product.id, 5000).filter(t => t.side === 'buy' && Number.isFinite(t.price));
+    const first = buys[buys.length - 1]; // DESC order → oldest buy last
+    if (first) db.putState(pkey('benchmark'), { symbol: first.symbol ?? pool()[0]?.symbol ?? product.id, price: first.price, ts: first.ts });
+  }
 
   function newVersion(id, p, ts) {
     return {
