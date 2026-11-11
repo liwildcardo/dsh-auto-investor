@@ -10,6 +10,7 @@ import { registerRoutes } from './lib/routes.js';
 import { collectStream } from './lib/llm.js';
 import { normalizeWebSearch } from './lib/news.js';
 import { makeRoutingFetch } from './lib/fallback-fetch.js';
+import { createCycleSchedule } from './lib/scheduler.js';
 import { loadProducts, mergeProduct } from './core/registry.js';
 import { createProductEngine } from './core/engine.js';
 import { createProductNews } from './core/news-service.js';
@@ -170,27 +171,28 @@ export function apply(ctx, config) {
     }
   });
 
-  // Strategy cycles, staggered per product so LLM calls do not burst together.
+  // Strategy cycles: outcome-aware self-scheduling (robustness R1) — a fast
+  // first run after activation, exponential backoff on failures (throw /
+  // llmError / stale quote) so the plugin starts working within ~a minute of
+  // the network or LLM recovering, normal cadence when healthy.
   const staggerMs = (config?.staggerSec ?? 120) * 1000;
   ctx.effect(() => {
     const stops = engines.map((engine, i) => {
-      let interval = null;
-      const start = setTimeout(() => {
-        const run = async () => {
-          if (engine.paused) return;
-          try {
-            await engine.runCycle();
-            state.lastRun = Date.now();
-            await engine.reflectIfDue();
-          } catch { /* keep the loop alive across transient failures */ }
-        };
-        interval = setInterval(run, cfg.cycleMin * 60_000);
-        run();
-      }, 45_000 + i * staggerMs); // wait for ctx activation before the first LLM call
-      return () => {
-        clearTimeout(start);
-        if (interval) clearInterval(interval);
-      };
+      const schedule = createCycleSchedule({
+        isPaused: () => engine.paused,
+        cycleMs: cfg.cycleMin * 60_000,
+        firstDelayMs: 15_000 + i * Math.min(staggerMs, 30_000),
+        backoffBaseMs: 60_000,
+        run: async () => {
+          const res = await engine.runCycle();
+          state.lastRun = Date.now();
+          await engine.reflectIfDue().catch(() => { /* reflection is best-effort */ });
+          const quoteFresh = Number.isFinite(res?.quoteTs)
+            && (Date.now() - res.quoteTs) <= (cfg.quoteMaxAgeSec ?? 300) * 1000;
+          return { healthy: !res?.llmError && quoteFresh };
+        },
+      });
+      return () => schedule.stop();
     });
     return () => { for (const stop of stops) stop(); };
   }, 'auto-investor: strategy cycles');

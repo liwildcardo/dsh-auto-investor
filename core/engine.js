@@ -1099,13 +1099,20 @@ export function createProductEngine({
         ? applyShrinkOnly(next.strategy, params)
         : {};
     const changed = Object.keys(applied).length > 0;
+    const llmOk = parsed != null; // thrown/failed LLM must not consume the cool-down
     const journal = db.getState(pkey('reflections')) ?? [];
     journal.push({
-      ts: now(), trigger, stats, health, critique, applied, versionCreated: changed || lossTriggered,
+      ts: now(), trigger, stats, health, critique, applied,
+      versionCreated: changed || lossTriggered, llmFailed: !llmOk,
     });
     db.putState(pkey('reflections'), journal.slice(-100));
-    lastReflectAt = now();
-    if (trigger === 'health') db.putState(pkey('lastHealthReflectAt'), now());
+    // Advance the cool-down clocks ONLY on a parseable LLM response — a
+    // network outage would otherwise burn the whole 24h/6h window on one
+    // failed call and postpone the next real reflection until tomorrow.
+    if (llmOk) {
+      lastReflectAt = now();
+      if (trigger === 'health') db.putState(pkey('lastHealthReflectAt'), now());
+    }
 
     if (changed || lossTriggered) {
       next.startPnl = snapshotOf(account, priceOf).totalPnl;
