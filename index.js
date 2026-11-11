@@ -10,7 +10,7 @@ import { registerRoutes } from './lib/routes.js';
 import { collectStream } from './lib/llm.js';
 import { normalizeWebSearch } from './lib/news.js';
 import { makeRoutingFetch } from './lib/fallback-fetch.js';
-import { createCycleSchedule } from './lib/scheduler.js';
+import { createCycleSchedule, assessCycle, firstDelayMs } from './lib/scheduler.js';
 import { loadProducts, mergeProduct } from './core/registry.js';
 import { createProductEngine } from './core/engine.js';
 import { createProductNews } from './core/news-service.js';
@@ -181,15 +181,13 @@ export function apply(ctx, config) {
       const schedule = createCycleSchedule({
         isPaused: () => engine.paused,
         cycleMs: cfg.cycleMin * 60_000,
-        firstDelayMs: 15_000 + i * Math.min(staggerMs, 30_000),
+        firstDelayMs: firstDelayMs(i, staggerMs),
         backoffBaseMs: 60_000,
         run: async () => {
           const res = await engine.runCycle();
           state.lastRun = Date.now();
           await engine.reflectIfDue().catch(() => { /* reflection is best-effort */ });
-          const quoteFresh = Number.isFinite(res?.quoteTs)
-            && (Date.now() - res.quoteTs) <= (cfg.quoteMaxAgeSec ?? 300) * 1000;
-          return { healthy: !res?.llmError && quoteFresh };
+          return assessCycle(res, Date.now(), (cfg.quoteMaxAgeSec ?? 300) * 1000);
         },
       });
       return () => schedule.stop();

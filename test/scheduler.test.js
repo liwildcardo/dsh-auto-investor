@@ -1,6 +1,46 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCycleSchedule } from '../lib/scheduler.js';
+import { createCycleSchedule, assessCycle, firstDelayMs } from '../lib/scheduler.js';
+
+test('assessCycle classifies cycle outcomes (the R1 backoff contract)', () => {
+  const now = 1_000_000;
+  const maxAge = 300_000;
+  // Environment failures → backoff.
+  assert.equal(assessCycle({ llmError: 'x', quoteTs: now }, now, maxAge).healthy, false, 'llmError fails');
+  assert.equal(assessCycle({ quoteTs: now - 600_000 }, now, maxAge).healthy, false, 'stale quote fails');
+  assert.equal(assessCycle({ quoteTs: 0 }, now, maxAge).healthy, false, 'never-quoted fails');
+  assert.equal(assessCycle(undefined, now, maxAge).healthy, false, 'no result fails');
+  // Deliberate holds are NOT environment failures.
+  assert.equal(assessCycle({ busy: true, quoteTs: 0 }, now, maxAge).healthy, true, 'busy is neutral');
+  assert.equal(assessCycle({ paused: true, quoteTs: 0 }, now, maxAge).healthy, true, 'paused is neutral');
+  // The normal case.
+  const ok = assessCycle({ quoteTs: now - 10_000 }, now, maxAge);
+  assert.equal(ok.healthy, true);
+  assert.equal(ok.reason, 'ok');
+  // Circuit breaker: ran fine, quote fresh → healthy (not a failure).
+  assert.equal(assessCycle({ circuitBreaker: true, quoteTs: now - 5_000 }, now, maxAge).healthy, true);
+});
+
+test('firstDelayMs starts fast and caps the per-product stagger', () => {
+  assert.equal(firstDelayMs(0, 120_000), 15_000, 'first product at 15s');
+  assert.equal(firstDelayMs(1, 120_000), 45_000, 'stagger capped at 30s per product');
+  assert.equal(firstDelayMs(3, 120_000), 105_000, 'last of four products ≤ 105s');
+  assert.equal(firstDelayMs(2, 10_000), 35_000, 'small configured stagger respected');
+});
+
+test('a throwing isPaused still reschedules (loop never dies)', async () => {
+  const t = fakeTimers();
+  const sched = createCycleSchedule({
+    run: async () => ({ healthy: true }),
+    isPaused: () => { throw new Error('boom'); },
+    cycleMs: 30 * 60_000, firstDelayMs: 15_000, backoffBaseMs: 60_000,
+    setTimeoutImpl: t.setTimeout, clearTimeoutImpl: t.clearTimeout,
+  });
+  await t.fireNext(); // isPaused throws → catch → backoff schedule
+  assert.equal(t.pending(), 1, 'a retry is pending after the throw');
+  sched.stop();
+  assert.equal(t.pending(), 0);
+});
 
 /** Controllable timer harness: manual advance, ordered firing. */
 function fakeTimers() {

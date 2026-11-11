@@ -24,7 +24,10 @@ function makeProduct() {
     news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: false },
     strategy: {
       signals: [{ id: 'trend', params: { fast: 2, slow: 3 }, weight: 1 }],
-      candidates: { threshold: 0.8 }, prompt: {}, decision: {}, evolvable: [],
+      candidates: { threshold: 0.8 },
+      prompt: {},
+      decision: {},
+      evolvable: [{ path: 'risk.stopLossPct', min: -60, max: -1, step: 0.5 }],
     },
     rules: { unit: 'share', lotSize: 100, settlement: 'T+0', fees: {}, sessions: [[570, 1560]], holidays: [] },
     risk: { perTrade: 10000, perSymbolPct: 100, minConfidence: 0.5, stopLossPct: -50, takeProfitPct: 50, dailyLossPct: -99, minSamplesToEvolve: 0 },
@@ -85,6 +88,69 @@ test('failure diagnostics distinguish a thrown call from unparseable output', as
   last = (db.getState('product:rc:reflections') ?? []).at(-1);
   assert.equal(last.failReason, 'llm-error');
   assert.equal(last.rawSnippet, undefined, 'no snippet when the call itself failed');
+});
+
+test('unparseable output does not advance the clock and folds into one journal marker', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rfold-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = makeProduct();
+  for (let i = 0; i < 25; i += 1) {
+    db.insertPoint({ ts: OPEN - (25 - i) * DAY, product: 'rc', symbol: 'x', price: 10 - (24 - i) * 0.01 });
+  }
+  db.putState('product:rc:lastReflectAt', OPEN - 25 * 3600_000);
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => '这是一段没有 JSON 的评语', // unparseable, no throw
+    now: () => OPEN,
+  });
+  await engine.reflectIfDue({ force: true });
+  let journal = db.getState('product:rc:reflections') ?? [];
+  assert.equal(journal.at(-1).failReason, 'unparseable');
+  assert.equal(db.getState('product:rc:lastReflectAt'), OPEN - 25 * 3600_000, 'clock NOT advanced');
+  // Second failure folds into the same marker (journal must not spam).
+  await engine.reflectIfDue({ force: true });
+  journal = db.getState('product:rc:reflections') ?? [];
+  assert.equal(journal.length, 1, 'consecutive failures collapse to one entry');
+  assert.equal(journal.at(-1).llmFailed, true);
+});
+
+test('a failed loss-triggered reflection does not fork a junk version', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rfork-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = makeProduct();
+  for (let i = 0; i < 25; i += 1) {
+    db.insertPoint({ ts: OPEN - (25 - i) * DAY, product: 'rc', symbol: 'x', price: 10 - (24 - i) * 0.01 });
+  }
+  const versionsBefore = (db.getState('product:rc:versions') ?? []).length || 1;
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => { throw new Error('network down'); },
+    now: () => OPEN,
+  });
+  // Seed loss stats: a realized close far below the loss threshold.
+  db.insertTrade({ ts: OPEN - 1000, side: 'sell', grams: 100, price: 9, rmb: 900, product: 'rc', symbol: 'x', realized: -5000 });
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.reflected, true);
+  assert.equal(r.versionCreated, false, 'no fork when the LLM failed');
+  const journal = db.getState('product:rc:reflections') ?? [];
+  assert.equal(journal.at(-1).versionCreated, false, 'journal agrees');
+});
+
+test('a forked version records the critique that created it', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rwhy-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = makeProduct();
+  for (let i = 0; i < 25; i += 1) {
+    db.insertPoint({ ts: OPEN - (25 - i) * DAY, product: 'rc', symbol: 'x', price: 10 - (24 - i) * 0.01 });
+  }
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => JSON.stringify({ critique: '收紧止损更稳', params: { 'risk.stopLossPct': -40 } }),
+    now: () => OPEN,
+  });
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.versionCreated, true, 'param change forks a version');
+  assert.equal(r.version.critique, '收紧止损更稳', 'per-version critique stored (paged in the UI)');
 });
 
 test('a successful reflection advances the cool-down (R2)', async (t) => {

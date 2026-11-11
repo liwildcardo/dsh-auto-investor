@@ -43,7 +43,10 @@ function loadClient(fakeState = undefined) {
           hookState[i] = typeof nv === 'function' ? nv(hookState[i]) : nv;
         }];
       },
-      useEffect: () => {},
+      // Count every hook type: an effect/ref placed after an early return
+      // would crash production just like a state hook would.
+      useEffect: () => { hookIdx += 1; },
+      useRef: (init) => { hookIdx += 1; return { current: init }; },
       Fragment: 'Fragment',
     };
     const requireStub = (name) => {
@@ -294,10 +297,27 @@ test('reflection record explains a failed run instead of showing a blank', async
   // Unparseable output gets its own wording; legacy entries a neutral note.
   const state2 = {
     ...fakeState,
-    reflections: [{ ...base, trigger: 'periodic', llmFailed: true, failReason: 'unparseable', critique: null }],
+    reflections: [{ ...base, trigger: 'periodic', llmFailed: true, failReason: 'llm-error', failDetail: 'connect ETIMEDOUT', critique: null }],
   };
   const text2 = JSON.stringify(renderPage(applyAndCapture(await loadClient(state2))));
-  assert.ok(text2.includes('LLM 输出不可解析'), 'unparseable wording');
+  assert.ok(text2.includes('LLM 调用失败'), 'llm-error wording');
+  assert.ok(text2.includes('connect ETIMEDOUT'), 'thrown error message rendered (R3)');
+
+  const state2b = {
+    ...fakeState,
+    reflections: [{ ...base, trigger: 'periodic', llmFailed: true, failReason: 'unparseable', critique: null }],
+  };
+  const text2b = JSON.stringify(renderPage(applyAndCapture(await loadClient(state2b))));
+  assert.ok(text2b.includes('LLM 输出不可解析'), 'unparseable wording');
+
+  // A successful parse with an empty critique is NOT a failure.
+  const state4 = {
+    ...fakeState,
+    reflections: [{ ...base, trigger: 'periodic', llmFailed: false, critique: '' }],
+  };
+  const text4 = JSON.stringify(renderPage(applyAndCapture(await loadClient(state4))));
+  assert.ok(text4.includes('模型未给出评语'), 'empty critique on success explained');
+  assert.ok(!text4.includes('历史记录'), 'not mislabeled as a legacy record');
 
   const state3 = {
     ...fakeState,
@@ -307,7 +327,7 @@ test('reflection record explains a failed run instead of showing a blank', async
   assert.ok(text3.includes('无结论（历史记录'), 'legacy blank gets a neutral explanation');
 });
 
-test('hook count identical with and without loaded state (early returns must not change hooks)', async () => {
+test('hook count identical across loaded / loading / error frames', async () => {
   // Regression: pager hooks placed AFTER the loading/error early returns made
   // the first (state=null) render run fewer hooks than the loaded render —
   // React throws "Rendered more hooks…" and the whole view goes black.
@@ -317,11 +337,20 @@ test('hook count identical with and without loaded state (early returns must not
   const loadedCount = hookIdx;
   const dataSlot = hookState.findIndex(v => v === fakeState);
   assert.ok(dataSlot >= 0, 'data slot found');
+
   hookState[dataSlot] = null;
   renderPage(reg); // loading path (early return before any content)
   const loadingCount = hookIdx;
   assert.equal(loadedCount, loadingCount,
     `hooks must match: loaded=${loadedCount}, loading=${loadingCount}`);
+
+  // Error frame: state present but the fetch failed.
+  hookState[dataSlot] = fakeState;
+  hookState[dataSlot + 1] = 'network down'; // the error slot sits right after state
+  renderPage(reg);
+  const errorCount = hookIdx;
+  assert.equal(loadedCount, errorCount,
+    `hooks must match: loaded=${loadedCount}, error=${errorCount}`);
 });
 
 test('pageItem pages history from the newest end', async () => {

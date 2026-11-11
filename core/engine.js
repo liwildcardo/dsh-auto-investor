@@ -646,7 +646,7 @@ export function createProductEngine({
   let running = false;
 
   async function runCycle() {
-    if (running) return jsonSafe({ busy: true, decision: { action: 'hold', reason: '上一轮分析仍在进行' }, trades: [], llmError: null, paused });
+    if (running) return jsonSafe({ busy: true, decision: { action: 'hold', reason: '上一轮分析仍在进行' }, trades: [], llmError: null, paused, quoteTs });
     running = true;
     try {
       return await runCycleInner();
@@ -658,8 +658,11 @@ export function createProductEngine({
   async function runCycleInner() {
     // Refresh quotes every cycle: gates and risk checks must see current prices.
     await tick().catch(() => {});
-    if (!quote) return jsonSafe({ decision: { action: 'hold', reason: 'no quote' }, trades: [], llmError: null, paused });
-    if (paused) return jsonSafe({ decision: { action: 'hold', reason: 'paused' }, trades: [], llmError: null, paused: true });
+    // Every early return carries quoteTs: the scheduler's health predicate
+    // (assessCycle) needs it to tell an environment failure from a
+    // deliberate hold (breaker/paused/busy).
+    if (!quote) return jsonSafe({ decision: { action: 'hold', reason: 'no quote' }, trades: [], llmError: null, paused, quoteTs });
+    if (paused) return jsonSafe({ decision: { action: 'hold', reason: 'paused' }, trades: [], llmError: null, paused: true, quoteTs });
     // Total-drawdown circuit breaker: stop opening new trades once the account
     // is down by the configured percentage from its starting capital.
     const snap0 = snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null);
@@ -668,7 +671,7 @@ export function createProductEngine({
     if (Number.isFinite(breakerPct) && drawdownPct <= breakerPct) {
       const decision = { action: 'hold', reason: `总回撤熔断(${drawdownPct.toFixed(2)}%)，暂停新交易`, confidence: 0 };
       lastRun = { decision, trades: [], rejection: null, llmError: null };
-      return jsonSafe({ decision, trades: [], rejection: null, llmError: null, paused, circuitBreaker: true, ingest: lastIngest });
+      return jsonSafe({ decision, trades: [], rejection: null, llmError: null, paused, circuitBreaker: true, ingest: lastIngest, quoteTs });
     }
     if (newsIngest) {
       try { lastIngest = await newsIngest(); } catch { /* news is best-effort */ }
@@ -1074,11 +1077,15 @@ export function createProductEngine({
     let parsed = null;
     let raw = null;
     let llmThrew = false;
+    let failDetail = null;
     try {
       const prompt = trigger === 'health' ? buildHealthPrompt(health) : buildReflectPrompt(stats);
       raw = await llm(prompt);
       parsed = parseReflection(raw);
-    } catch { llmThrew = true; /* network/provider failure */ }
+    } catch (e) {
+      llmThrew = true;
+      failDetail = String(e?.message ?? e).slice(0, 160); // R3: keep the cause
+    }
     const critique = String(parsed?.critique ?? '').slice(0, 800) || null;
     const params = parsed?.params ?? {};
 
@@ -1103,17 +1110,28 @@ export function createProductEngine({
         : {};
     const changed = Object.keys(applied).length > 0;
     const llmOk = parsed != null; // thrown/failed LLM must not consume the cool-down
-    const journal = db.getState(pkey('reflections')) ?? [];
-    journal.push({
+    // No junk version forks when the LLM failed: a failed loss-triggered
+    // reflection retries next cycle instead of cloning the version each time.
+    const willFork = (changed || lossTriggered) && llmOk;
+    const entry = {
       ts: now(), trigger, stats, health, critique, applied,
-      versionCreated: changed || lossTriggered, llmFailed: !llmOk,
+      versionCreated: willFork, llmFailed: !llmOk,
       // Why it failed: a thrown call (network) vs prose we could not parse —
-      // plus a raw snippet so unparseable output is diagnosable later.
+      // plus the error message / raw snippet so failures are diagnosable.
       ...(llmOk ? {} : {
         failReason: llmThrew ? 'llm-error' : 'unparseable',
-        ...(llmThrew ? {} : { rawSnippet: String(raw ?? '').slice(0, 160) }),
+        ...(llmThrew ? { failDetail } : { rawSnippet: String(raw ?? '').slice(0, 160) }),
       }),
-    });
+    };
+    const journal = db.getState(pkey('reflections')) ?? [];
+    const prev = journal[journal.length - 1];
+    if (!llmOk && prev?.llmFailed) {
+      // Consecutive failures collapse into one rolling marker: a long outage
+      // must not evict real history from the 100-entry journal.
+      journal[journal.length - 1] = entry;
+    } else {
+      journal.push(entry);
+    }
     db.putState(pkey('reflections'), journal.slice(-100));
     // Advance the cool-down clocks ONLY on a parseable LLM response — a
     // network outage would otherwise burn the whole 24h/6h window on one
@@ -1123,8 +1141,9 @@ export function createProductEngine({
       if (trigger === 'health') db.putState(pkey('lastHealthReflectAt'), now());
     }
 
-    if (changed || lossTriggered) {
+    if (willFork) {
       next.startPnl = snapshotOf(account, priceOf).totalPnl;
+      next.critique = critique; // remember WHY this version exists (paged per-version)
       versions.push(next);
       persist();
       return jsonSafe({ reflected: true, stats, critique, applied, version: next, versionCreated: true });

@@ -591,6 +591,20 @@ window.__ModuleLoader__.load({
         h('span', { className: 'k' }, `${s.id} · 权重 ${s.weight ?? 1}`),
         h('span', { className: 'v' }, JSON.stringify(s.params ?? {}))));
 
+      // Reflection body: explain failures instead of blank lines, and tell a
+      // legacy entry (no llmFailed flag) apart from a silent empty critique.
+      const reflBody = (r) => {
+        if (r.critique) return r.critique;
+        if (r.llmFailed) {
+          const why = r.failReason === 'llm-error'
+            ? `LLM 调用失败${r.failDetail ? `：${r.failDetail}` : ''}`
+            : 'LLM 输出不可解析';
+          return `复盘未完成（${why}），已安排自动重试`;
+        }
+        if (r.llmFailed === false) return '无结论（模型未给出评语）';
+        return '无结论（历史记录，当时未捕获失败原因）';
+      };
+
       // Browsing one review per page (newest by default); the full journal
       // stays in the API.
       const reflections = [reflPage.item].filter(Boolean).map((r, i) => h('li', { key: i },
@@ -601,10 +615,7 @@ window.__ModuleLoader__.load({
               : r.trigger === 'periodic' ? '定期复盘'
                 : r.trigger === 'health' ? '健康诊断' : '手动复盘'),
           r.versionCreated ? h('span', { className: 'ai-chip' }, '新版本') : null),
-        h('div', { className: 'ai-strat-text' },
-          String(r.critique ?? (r.llmFailed
-            ? `复盘未完成（${r.failReason === 'llm-error' ? 'LLM 调用失败' : 'LLM 输出不可解析'}），已安排自动重试`
-            : '无结论（历史记录，当时未捕获失败原因）')))));
+        h('div', { className: 'ai-strat-text' }, reflBody(r))));
 
       const trades = (state.trades ?? []).slice(0, 10).map((t, i) => h('tr', { key: i },
         h('td', null, new Date(t.ts).toLocaleString('zh-CN')),
