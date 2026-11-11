@@ -13,6 +13,25 @@ window.__ModuleLoader__.load({
 
     const fmt = (v, d = 2) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : '--');
     const pnlClass = (v) => (v > 0 ? 'ai-up' : v < 0 ? 'ai-down' : 'ai-flat');
+
+    /**
+     * Page through a history list by index-from-end (0 = newest).
+     * Used by the 策略版本 / 复盘记录 pagers so the newest entry stays the
+     * default while older records remain reachable.
+     */
+    const pageItem = (list, idxFromEnd = 0) => {
+      const total = Array.isArray(list) ? list.length : 0;
+      if (!total) return { item: null, pos: 0, total: 0, canOlder: false, canNewer: false, label: '0/0' };
+      const pos = Math.min(Math.max(idxFromEnd, 0), total - 1);
+      return {
+        item: list[total - 1 - pos],
+        pos,
+        total,
+        canOlder: pos < total - 1, // older entries exist
+        canNewer: pos > 0,         // newer entries exist
+        label: `${total - pos}/${total}`,
+      };
+    };
     // Decode HTML entities for rows stored before ingest-side decoding existed.
     const plain = (s) => String(s ?? '')
       .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
@@ -146,6 +165,16 @@ window.__ModuleLoader__.load({
       .ai-src { color: var(--dsw-alias-label-secondary); font-size: 11px; }
 
       .ai-note { color: var(--dsw-alias-label-secondary); font-size: 11.5px; margin-top: 8px; }
+      .ai-pager { display: flex; align-items: center; justify-content: flex-end;
+        gap: 8px; margin-top: 10px; }
+      .ai-pager .pg-btn { width: 26px; height: 24px; padding: 0; border-radius: 7px;
+        border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1);
+        color: var(--dsw-alias-label-primary); cursor: pointer; font-size: 13px; line-height: 1; }
+      .ai-pager .pg-btn:hover:not(:disabled) { border-color: var(--dsw-alias-brand-primary);
+        color: var(--dsw-alias-brand-primary); }
+      .ai-pager .pg-btn:disabled { opacity: .35; cursor: default; }
+      .ai-pager .pg-label { font-size: 11.5px; color: var(--dsw-alias-label-secondary);
+        font-variant-numeric: tabular-nums; min-width: 40px; text-align: center; }
       .ai-reason { color: var(--dsw-alias-label-secondary); line-height: 1.6; }
 
       .ai-strat-grid { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; }
@@ -409,7 +438,17 @@ window.__ModuleLoader__.load({
       const p = state.product ?? {};
       const snap = state.snapshot ?? { positions: [] };
       const positions = snap.positions ?? [];
-      const cur = state.currentVersion ?? {};
+      // Paged history: 策略版本 and 复盘记录 browse newest→oldest (pos 0 =
+      // newest), defaulting to the current entry while older ones stay reachable.
+      const [verIdx, setVerIdx] = React.useState(0);
+      const [reflIdx, setReflIdx] = React.useState(0);
+      const verPage = pageItem(state.versions, verIdx);
+      const reflPage = pageItem(state.reflections, reflIdx);
+      // Newest page = the canonical currentVersion; paged-back pages come
+      // from the versions array (same source in production).
+      const cur = (verPage.pos === 0
+        ? (state.currentVersion ?? verPage.item)
+        : verPage.item) ?? {};
       const strat = cur.strategy ?? {};
       const fmtQty = (v) => (typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : '--');
       const updated = Number.isFinite(state.quoteTs)
@@ -442,6 +481,11 @@ window.__ModuleLoader__.load({
       const card = (accent, title, right, children) => h('div', { className: `ai-card ai-acc-${accent}` },
         h(Section, { accent, title, right }),
         h('div', { className: 'ai-body' }, ...children));
+      // History pager: ‹ older · n/total · › newer (pos 0 = newest).
+      const pager = (page, setIdx) => h('div', { className: 'ai-pager' },
+        h('button', { className: 'pg-btn', type: 'button', disabled: !page.canOlder, onClick: () => setIdx(page.pos + 1) }, '‹'),
+        h('span', { className: 'pg-label' }, page.label),
+        h('button', { className: 'pg-btn', type: 'button', disabled: !page.canNewer, onClick: () => setIdx(page.pos - 1) }, '›'));
       const pill = (cls, text) => h('span', { className: `ai-pill${cls ? ` ${cls}` : ''}` },
         h('span', { className: 'dot' }), text);
       const kpi = (label, value, cls, sub) => h('div', { className: `ai-kpi${cls ? ` ${cls}` : ''}` },
@@ -544,8 +588,9 @@ window.__ModuleLoader__.load({
         h('span', { className: 'k' }, `${s.id} · 权重 ${s.weight ?? 1}`),
         h('span', { className: 'v' }, JSON.stringify(s.params ?? {}))));
 
-      // Only the most recent review is shown; the full journal stays in the API.
-      const reflections = (state.reflections ?? []).slice(-1).map((r, i) => h('li', { key: i },
+      // Browsing one review per page (newest by default); the full journal
+      // stays in the API.
+      const reflections = [reflPage.item].filter(Boolean).map((r, i) => h('li', { key: i },
         h('div', null,
           h('span', { className: 'ai-src' }, new Date(r.ts).toLocaleString('zh-CN')),
           h('span', { className: 'ai-chip' },
@@ -661,13 +706,15 @@ window.__ModuleLoader__.load({
             riskLine,
             h('div', { className: 'ai-strat-grid' }, signals),
             cur.critique
-              ? h('div', { className: 'ai-note' }, `最近复盘结论：${cur.critique}`)
+              ? h('div', { className: 'ai-note' }, `复盘结论：${cur.critique}`)
               : h('div', { className: 'ai-empty' }, '该版本还没有复盘结论'),
+            (state.versions ?? []).length > 1 ? pager(verPage, setVerIdx) : null,
           ]),
           card('red', '复盘记录', h('span', { className: 'ai-src' }, `共 ${(state.reflections ?? []).length} 次`), [
             (state.reflections ?? []).length === 0
               ? h('div', { className: 'ai-empty' }, '暂无复盘')
               : h('ul', { className: 'ai-news' }, reflections),
+            (state.reflections ?? []).length > 1 ? pager(reflPage, setReflIdx) : null,
           ])),
 
         h('div', { className: 'ai-grid' },
@@ -776,6 +823,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
+      pageItem,
       inject: ['slots', 'locale'],
       apply(ctx) {
         const t = (zh, en) => {

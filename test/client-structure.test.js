@@ -5,9 +5,19 @@ import assert from 'node:assert/strict';
 // React, capture the components registered into slots, and render the single
 // auto-investor page (product switcher + selected dashboard).
 
+// Stateful hook store: persists across re-renders of one loadClient instance
+// (so pager interactions can be clicked and re-rendered), reset per loadClient.
+let hookState = [];
+let hookIdx = 0;
+let fakeAssigned = false;
+const beginRender = () => { hookIdx = 0; };
+
 function loadClient(fakeState = undefined) {
   let captured = null;
   globalThis.window = { __ModuleLoader__: { load(mod) { captured = mod; } } };
+  hookState = [];
+  hookIdx = 0;
+  fakeAssigned = false;
   return import(`../client.js?t=${Date.now()}-${Math.random()}`).then(() => {
     // Mimic real React: children live on props.children (elements never carry
     // a top-level children field). findTree reads the mirrored top-level copy.
@@ -16,16 +26,22 @@ function loadClient(fakeState = undefined) {
       props: { ...(props ?? {}), children },
       children,
     });
-    let firstNull = true;
     const React = {
       createElement: makeEl,
       useState: (init) => {
-        let v = typeof init === 'function' ? init() : init;
-        if (init === null && fakeState !== undefined && firstNull) {
-          firstNull = false; // only the dashboard's data slot receives the fake state
-          v = fakeState;
+        const i = hookIdx++;
+        if (!(i in hookState)) {
+          let v = typeof init === 'function' ? init() : init;
+          // only the dashboard's first null data slot receives the fake state
+          if (init === null && fakeState !== undefined && !fakeAssigned) {
+            fakeAssigned = true;
+            v = fakeState;
+          }
+          hookState[i] = v;
         }
-        return [v, () => {}];
+        return [hookState[i], (nv) => {
+          hookState[i] = typeof nv === 'function' ? nv(hookState[i]) : nv;
+        }];
       },
       useEffect: () => {},
       Fragment: 'Fragment',
@@ -125,6 +141,7 @@ function findTree(node, pred, out = []) {
 
 /** Render the single page down to the selected product dashboard element. */
 function renderPage(reg) {
+  beginRender();
   const el = reg['auto-investor-dashboard'].Component();
   const dash = findTree(el, n => typeof n.type === 'function' && n.props?.productId)[0]
     ?? findTree(el, n => typeof n.type === 'function')[0];
@@ -288,6 +305,76 @@ test('reflection record explains a failed run instead of showing a blank', async
   };
   const text3 = JSON.stringify(renderPage(applyAndCapture(await loadClient(state3))));
   assert.ok(text3.includes('无结论（历史记录'), 'legacy blank gets a neutral explanation');
+});
+
+test('pageItem pages history from the newest end', async () => {
+  const api = await loadClient();
+  const p = api.pageItem;
+  assert.equal(typeof p, 'function', 'pageItem exposed for testing');
+  const list = ['a', 'b', 'c']; // c = newest
+  const d = p(list, 0);
+  assert.equal(d.item, 'c');
+  assert.equal(d.label, '3/3');
+  assert.equal(d.canOlder, true, 'older entries reachable');
+  assert.equal(d.canNewer, false, 'nothing newer than newest');
+  const o = p(list, 2);
+  assert.equal(o.item, 'a');
+  assert.equal(o.label, '1/3');
+  assert.equal(o.canOlder, false);
+  assert.equal(o.canNewer, true);
+  assert.equal(p(list, 99).item, 'a', 'index clamped to oldest');
+  const e = p([], 0);
+  assert.equal(e.item, null);
+  assert.equal(e.label, '0/0');
+  assert.equal(e.canOlder, false);
+});
+
+test('策略版本与复盘记录可翻页浏览历史', async () => {
+  const state = {
+    ...fakeState,
+    versions: [
+      { id: 6, strategy: { signals: [], risk: {} }, critique: 'V6结论' }, // oldest
+      { id: 7, strategy: { signals: [], risk: {} }, critique: 'V7结论' },
+      { id: 8, strategy: { signals: [], risk: {} }, critique: 'V8结论' }, // newest = current
+    ],
+    currentVersion: { id: 8, strategy: { signals: [], risk: {} }, critique: 'V8结论' },
+    reflections: [
+      { ts: 1, trigger: 'periodic', critique: '旧结论OLD' },
+      { ts: 2, trigger: 'periodic', critique: '新结论NEW' },
+    ],
+  };
+  const api = await loadClient(state);
+  const reg = applyAndCapture(api);
+  const findPager = (tree, label) => findTree(tree, n => n.type === 'div'
+    && String(n.props?.className ?? '').includes('ai-pager')
+    && (n.children ?? []).some(c => c?.type === 'span' && (c.children ?? [])[0] === label))[0];
+
+  let tree = renderPage(reg);
+  let text = JSON.stringify(tree);
+  assert.ok(text.includes('V8结论'), 'default shows the newest version');
+  assert.ok(text.includes('新结论NEW'), 'default shows the newest reflection');
+  const vPager = findPager(tree, '3/3');
+  assert.ok(vPager, 'version pager rendered with label');
+  const rPager = findPager(tree, '2/2');
+  assert.ok(rPager, 'reflection pager rendered with label');
+  assert.equal(vPager.children[0].props.disabled, false, '‹ enabled while older versions exist');
+  assert.equal(vPager.children[2].props.disabled, true, '› disabled at the newest');
+
+  // Page the version card to the older version.
+  vPager.children[0].props.onClick();
+  tree = renderPage(reg);
+  text = JSON.stringify(tree);
+  assert.ok(text.includes('V7结论'), 'paged one version back');
+  assert.ok(!text.includes('V8结论'), 'newest version no longer rendered');
+  assert.ok(text.includes('2/3'), 'label advanced');
+
+  // Page the reflection card independently.
+  const rPager2 = findPager(tree, '2/2');
+  rPager2.children[0].props.onClick();
+  tree = renderPage(reg);
+  text = JSON.stringify(tree);
+  assert.ok(text.includes('旧结论OLD'), 'paged to the older reflection');
+  assert.ok(!text.includes('新结论NEW'), 'newest reflection no longer rendered');
 });
 
 test('only the latest reflection is rendered', async () => {
