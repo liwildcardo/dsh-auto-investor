@@ -247,6 +247,19 @@ test('运行健康 line renders candidate rate, rejections and bars', async () =
   assert.ok(text.includes('bars 13/52'), 'bars vs requirement shown');
 });
 
+test('theme: brand-fill surfaces use the foreground token, never bare #fff', async () => {
+  const api = await loadClient(fakeState);
+  const reg = applyAndCapture(api);
+  const tree = renderPage(reg);
+  const styleNode = findTree(tree, n => n.type === 'style')[0];
+  const css = (styleNode?.children ?? []).join('');
+  assert.ok(css.includes('var(--dsw-alias-label-primary-foreground'), 'inverted text token used on brand fills');
+  // The old bug: active tab / primary button hardcoded white text while the
+  // dark-theme brand fill is light → white-on-white.
+  assert.ok(!/\.ai-tab\.active[^}]*color:\s*#fff/.test(css), 'active tab must not hardcode #fff');
+  assert.ok(!/\.ai-btn\.primary[^}]*color:\s*#fff;/.test(css), 'primary button must not hardcode #fff');
+});
+
 test('only the latest reflection is rendered', async () => {
   const state = {
     ...fakeState,

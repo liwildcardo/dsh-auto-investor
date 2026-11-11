@@ -124,8 +124,9 @@ window.__ModuleLoader__.load({
       .ai-btn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-primary); }
       .ai-btn:disabled { opacity: .5; cursor: default; }
       .ai-btn.primary { background: var(--dsw-alias-brand-primary);
-        border-color: var(--dsw-alias-brand-primary); color: #fff; }
-      .ai-btn.primary:hover { opacity: .9; color: #fff; }
+        border-color: var(--dsw-alias-brand-primary);
+        color: var(--dsw-alias-label-primary-foreground, #fff); }
+      .ai-btn.primary:hover { opacity: .9; color: var(--dsw-alias-label-primary-foreground, #fff); }
 
       .ai-badge { display: inline-block; padding: 1px 9px; border-radius: 99px; font-size: 11px;
         background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--dsw-alias-border-l1); }
@@ -197,7 +198,11 @@ window.__ModuleLoader__.load({
         background: transparent; color: var(--dsw-alias-label-secondary);
         font-size: 13px; font-weight: 600; transition: background .15s, color .15s; }
       .ai-tab:hover { color: var(--dsw-alias-label-primary); }
-      .ai-tab.active { background: var(--dsw-alias-brand-primary); color: #fff; }
+      /* Foreground token (not #fff): dark-theme brand fills are light, so the
+         text must invert with the theme or the active product name goes
+         white-on-white (screenshot 2026-11-11). */
+      .ai-tab.active { background: var(--dsw-alias-brand-primary);
+        color: var(--dsw-alias-label-primary-foreground, #fff); }
     `;
 
     function Metric({ label, value, cls }) {
