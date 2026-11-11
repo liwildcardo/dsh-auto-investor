@@ -350,6 +350,11 @@ window.__ModuleLoader__.load({
       const [chartSym, setChartSym] = React.useState(() => readChartSym(productId));
       const [wlQuery, setWlQuery] = React.useState('');
       const [wlResults, setWlResults] = React.useState(null);
+      // History pagers — MUST sit with the other hooks, before the early
+      // returns below: React requires an identical hook count on every render
+      // (state=null loading frame vs loaded frame), or the view crashes black.
+      const [verIdx, setVerIdx] = React.useState(0);
+      const [reflIdx, setReflIdx] = React.useState(0);
 
       React.useEffect(() => {
         let alive = true;
@@ -440,8 +445,6 @@ window.__ModuleLoader__.load({
       const positions = snap.positions ?? [];
       // Paged history: 策略版本 and 复盘记录 browse newest→oldest (pos 0 =
       // newest), defaulting to the current entry while older ones stay reachable.
-      const [verIdx, setVerIdx] = React.useState(0);
-      const [reflIdx, setReflIdx] = React.useState(0);
       const verPage = pageItem(state.versions, verIdx);
       const reflPage = pageItem(state.reflections, reflIdx);
       // Newest page = the canonical currentVersion; paged-back pages come

@@ -307,6 +307,23 @@ test('reflection record explains a failed run instead of showing a blank', async
   assert.ok(text3.includes('无结论（历史记录'), 'legacy blank gets a neutral explanation');
 });
 
+test('hook count identical with and without loaded state (early returns must not change hooks)', async () => {
+  // Regression: pager hooks placed AFTER the loading/error early returns made
+  // the first (state=null) render run fewer hooks than the loaded render —
+  // React throws "Rendered more hooks…" and the whole view goes black.
+  const api = await loadClient(fakeState);
+  const reg = applyAndCapture(api);
+  renderPage(reg); // loaded path
+  const loadedCount = hookIdx;
+  const dataSlot = hookState.findIndex(v => v === fakeState);
+  assert.ok(dataSlot >= 0, 'data slot found');
+  hookState[dataSlot] = null;
+  renderPage(reg); // loading path (early return before any content)
+  const loadingCount = hookIdx;
+  assert.equal(loadedCount, loadingCount,
+    `hooks must match: loaded=${loadedCount}, loading=${loadingCount}`);
+});
+
 test('pageItem pages history from the newest end', async () => {
   const api = await loadClient();
   const p = api.pageItem;
