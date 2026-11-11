@@ -1,23 +1,25 @@
 /**
- * 宏观/基本面因子数据层（批次 E，换源版）：
- *  - 实际收益率：东方财富 `171.UI10Y`（美国10年期通胀国债收益率，JSON，
- *    f43÷1000 为百分比；FRED 在宿主进程内实测 28–30s socket 挂起、web 服务
- *    拒收 application/csv，故弃用——诊断记录见 spec §9）
- *  - 美元指数：er-api 汇率按 DXY 标准公式合成，逐日累积历史
- *  - 全部带 staleness 缓存（26h 重抓门限），失败沿用旧缓存并记录错误
- * 派生输出统一为 {value, asOf, delta5d, stale}：delta 为 5 日变化
- * （收益率类=百分点差，指数类=%变化），asOf 超过 5 天 → stale=true。
- */
+ * 瀹忚/鍩烘湰闈㈠洜瀛愭暟鎹眰锛堟壒娆?E锛屾崲婧愮増锛夛細
+ *  - 瀹為檯鏀剁泭鐜囷細涓滄柟璐㈠瘜 `171.UI10Y`锛堢編鍥?0骞存湡閫氳儉鍥藉€烘敹鐩婄巼锛孞SON锛? *    f43梅1000 涓虹櫨鍒嗘瘮锛汧RED 鍦ㄥ涓昏繘绋嬪唴瀹炴祴 28鈥?0s socket 鎸傝捣銆亀eb 鏈嶅姟
+ *    鎷掓敹 application/csv锛屾晠寮冪敤鈥斺€旇瘖鏂褰曡 spec 搂9锛? *  - 缇庡厓鎸囨暟锛歟r-api 姹囩巼鎸?DXY 鏍囧噯鍏紡鍚堟垚锛岄€愭棩绱Н鍘嗗彶
+ *  - 鍏ㄩ儴甯?staleness 缂撳瓨锛?6h 閲嶆姄闂ㄩ檺锛夛紝澶辫触娌跨敤鏃х紦瀛樺苟璁板綍閿欒
+ * 娲剧敓杈撳嚭缁熶竴涓?{value, asOf, delta5d, stale}锛歞elta 涓?5 鏃ュ彉鍖? * 锛堟敹鐩婄巼绫?鐧惧垎鐐瑰樊锛屾寚鏁扮被=%鍙樺寲锛夛紝asOf 瓒呰繃 5 澶?鈫?stale=true銆? */
 
 const DAY = 86_400_000;
 const MAX_AGE = 26 * 3600_000; // daily series republish within ~26h
 
-/** Parse the eastmoney quote payload → {value, asOf, name} or null. */
+/** Error text incl. the hidden undici cause (ENOTFOUND / ECONNREFUSED / 鈥?. */
+function describeError(e) {
+  const cause = e?.cause ? ` [${e.cause.code ?? e.cause.message ?? ''}]` : '';
+  return `${String(e?.message ?? e)}${cause}`.slice(0, 160);
+}
+
+/** Parse the eastmoney quote payload 鈫?{value, asOf, name} or null. */
 export function parseEmQuote(json, now = () => Date.now()) {
   const d = json?.data;
   const raw = Number(d?.f43);
   if (!Number.isFinite(raw)) return null;
-  const value = raw / 10000; // eastmoney bond yields are quoted ×10000 (26190 → 2.6190%)
+  const value = raw / 10000; // eastmoney bond yields are quoted 脳10000 (26190 鈫?2.6190%)
   const ts = Number(d?.f86) * 1000;
   const asOf = Number.isFinite(ts) && ts > 0
     ? new Date(ts + 8 * 3600_000).toISOString().slice(0, 10) // Shanghai date
@@ -25,7 +27,7 @@ export function parseEmQuote(json, now = () => Date.now()) {
   return { value, asOf, name: d?.f58 ? String(d.f58) : null };
 }
 
-/** Parse eastmoney daily klines ("date,open,close") → [{date, value}] (close). */
+/** Parse eastmoney daily klines ("date,open,close") 鈫?[{date, value}] (close). */
 export function parseEmKlines(klines) {
   return (klines ?? []).map((line) => {
     const parts = String(line).split(',');
@@ -35,7 +37,7 @@ export function parseEmKlines(klines) {
   }).filter(Boolean);
 }
 
-/** Parse a frankfurter time-series (base USD) → [{date, dxy}] via computeDxy. */
+/** Parse a frankfurter time-series (base USD) 鈫?[{date, dxy}] via computeDxy. */
 export function parseFrankfurterDxy(json) {
   const out = [];
   for (const [date, rates] of Object.entries(json?.rates ?? {})) {
@@ -92,7 +94,7 @@ function withDelta(entry, now, kind) {
   return { ...entry, value, delta5d, stale };
 }
 
-/** Read cached factors (no network) — used by status/prompt. */
+/** Read cached factors (no network) 鈥?used by status/prompt. */
 export function readFactors(db, now = () => Date.now()) {
   return {
     realYield: withDelta(db.getState('factor:em:UI10Y'), now, 'pp'),
@@ -103,12 +105,12 @@ export function readFactors(db, now = () => Date.now()) {
 /**
  * Fetch an eastmoney quote and accumulate daily history (60 obs) behind the
  * 26h gate; failures keep the cache and record the error for observability
- * (fetchedAt: 0 → the next cycle retries instead of waiting 26h).
+ * (fetchedAt: 0 鈫?the next cycle retries instead of waiting 26h).
  */
 async function getEmFactor(fetchFn, db, { key, secid }, now) {
   const cached = db.getState(key);
   const fresh = cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE;
-  // Fresh value AND enough history → nothing to do. A fresh value with a
+  // Fresh value AND enough history 鈫?nothing to do. A fresh value with a
   // thin history still runs the seed below (the 26h gate must not block it).
   if (fresh && (cached.values?.length ?? 0) >= 2) return cached;
   const started = Date.now();
@@ -131,8 +133,8 @@ async function getEmFactor(fetchFn, db, { key, secid }, now) {
         fetchedAt: now(),
       };
     }
-    // Bootstrap: delta5d needs ≥2 points; one-shot best-effort seed from the
-    // daily kline (failures retry next cycle — the gate keeps values < 2 open).
+    // Bootstrap: delta5d needs 鈮? points; one-shot best-effort seed from the
+    // daily kline (failures retry next cycle 鈥?the gate keeps values < 2 open).
     if ((entry.values?.length ?? 0) < 2) {
       try {
         const beg = new Date(now() - 60 * DAY).toISOString().slice(0, 10).replaceAll('-', '');
@@ -143,7 +145,7 @@ async function getEmFactor(fetchFn, db, { key, secid }, now) {
         if (h.ok) {
           entry = { ...entry, values: mergeHistory(parseEmKlines((await h.json())?.data?.klines), entry.values ?? []).slice(-60) };
         }
-      } catch { /* seed failure → next cycle retries */ }
+      } catch { /* seed failure 鈫?next cycle retries */ }
     }
     db.putState(key, entry);
     return entry;
@@ -152,7 +154,7 @@ async function getEmFactor(fetchFn, db, { key, secid }, now) {
       values: cached?.values ?? [],
       asOf: cached?.asOf ?? null,
       fetchedAt: 0,
-      error: String(e?.message ?? e).slice(0, 160),
+      error: describeError(e),
       errorMs: Date.now() - started,
       errorAt: new Date(started).toISOString(),
     };
@@ -189,7 +191,7 @@ async function getUsdIndex(fetchFn, db, now) {
         fetchedAt: now(),
       };
     }
-    // Bootstrap from ECB history (frankfurter, base USD → same per-USD shape)
+    // Bootstrap from ECB history (frankfurter, base USD 鈫?same per-USD shape)
     // so the 5-day delta works from day one.
     if ((entry.values?.length ?? 0) < 2) {
       try {
@@ -199,7 +201,7 @@ async function getUsdIndex(fetchFn, db, now) {
           headers: { 'user-agent': 'Mozilla/5.0' },
         });
         if (h.ok) entry = { ...entry, values: mergeHistory(parseFrankfurterDxy(await h.json()), entry.values ?? []).slice(-60) };
-      } catch { /* seed failure → next cycle retries */ }
+      } catch { /* seed failure 鈫?next cycle retries */ }
     }
     db.putState(key, entry);
     return entry;
@@ -208,7 +210,7 @@ async function getUsdIndex(fetchFn, db, now) {
       values: cached?.values ?? [],
       asOf: cached?.asOf ?? null,
       fetchedAt: 0,
-      error: String(e?.message ?? e).slice(0, 160),
+      error: describeError(e),
       errorMs: Date.now() - started,
       errorAt: new Date(started).toISOString(),
     };
