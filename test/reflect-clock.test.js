@@ -57,6 +57,36 @@ test('a failed reflection does NOT consume the periodic cool-down (R2)', async (
   assert.equal(llmCalls, 2, 'the LLM was called again');
 });
 
+test('failure diagnostics distinguish a thrown call from unparseable output', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rdiag-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = makeProduct();
+  for (let i = 0; i < 25; i += 1) {
+    db.insertPoint({ ts: OPEN - (25 - i) * DAY, product: 'rc', symbol: 'x', price: 10 - (24 - i) * 0.01 });
+  }
+  // Case 1: LLM returns prose without JSON → unparseable + raw snippet.
+  const engine1 = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => '我觉得策略没问题，无需调整参数。',
+    now: () => OPEN,
+  });
+  await engine1.reflectIfDue({ force: true });
+  let last = (db.getState('product:rc:reflections') ?? []).at(-1);
+  assert.equal(last.llmFailed, true);
+  assert.equal(last.failReason, 'unparseable');
+  assert.ok(last.rawSnippet?.includes('策略没问题'), 'raw output kept for diagnosis');
+  // Case 2: LLM call throws → llm-error, no snippet.
+  const engine2 = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => { throw new Error('network down'); },
+    now: () => OPEN,
+  });
+  await engine2.reflectIfDue({ force: true });
+  last = (db.getState('product:rc:reflections') ?? []).at(-1);
+  assert.equal(last.failReason, 'llm-error');
+  assert.equal(last.rawSnippet, undefined, 'no snippet when the call itself failed');
+});
+
 test('a successful reflection advances the cool-down (R2)', async (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rclock2-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());

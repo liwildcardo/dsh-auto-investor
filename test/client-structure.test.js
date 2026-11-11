@@ -260,6 +260,36 @@ test('theme: brand-fill surfaces use the foreground token, never bare #fff', asy
   assert.ok(!/\.ai-btn\.primary[^}]*color:\s*#fff;/.test(css), 'primary button must not hardcode #fff');
 });
 
+test('reflection record explains a failed run instead of showing a blank', async () => {
+  const base = { ts: Date.now(), stats: {}, applied: {}, versionCreated: false };
+  const state = {
+    ...fakeState,
+    reflections: [
+      { ...base, trigger: 'health', llmFailed: true, failReason: 'llm-error', critique: null },
+    ],
+  };
+  const api = await loadClient(state);
+  const text = JSON.stringify(renderPage(applyAndCapture(api)));
+  assert.ok(text.includes('健康诊断'), 'health trigger labeled correctly (was mislabeled 手动复盘)');
+  assert.ok(text.includes('复盘未完成'), 'failed reflection explains itself');
+  assert.ok(text.includes('LLM 调用失败'), 'failure reason shown');
+
+  // Unparseable output gets its own wording; legacy entries a neutral note.
+  const state2 = {
+    ...fakeState,
+    reflections: [{ ...base, trigger: 'periodic', llmFailed: true, failReason: 'unparseable', critique: null }],
+  };
+  const text2 = JSON.stringify(renderPage(applyAndCapture(await loadClient(state2))));
+  assert.ok(text2.includes('LLM 输出不可解析'), 'unparseable wording');
+
+  const state3 = {
+    ...fakeState,
+    reflections: [{ ...base, trigger: 'periodic', critique: null }], // pre-flag legacy entry
+  };
+  const text3 = JSON.stringify(renderPage(applyAndCapture(await loadClient(state3))));
+  assert.ok(text3.includes('无结论（历史记录'), 'legacy blank gets a neutral explanation');
+});
+
 test('only the latest reflection is rendered', async () => {
   const state = {
     ...fakeState,

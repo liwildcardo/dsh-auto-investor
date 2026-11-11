@@ -1072,10 +1072,13 @@ export function createProductEngine({
     }
     const trigger = force ? 'manual' : lossTriggered ? 'loss' : healthDue ? 'health' : 'periodic';
     let parsed = null;
+    let raw = null;
+    let llmThrew = false;
     try {
       const prompt = trigger === 'health' ? buildHealthPrompt(health) : buildReflectPrompt(stats);
-      parsed = parseReflection(await llm(prompt));
-    } catch { /* llm failure keeps the version */ }
+      raw = await llm(prompt);
+      parsed = parseReflection(raw);
+    } catch { llmThrew = true; /* network/provider failure */ }
     const critique = String(parsed?.critique ?? '').slice(0, 800) || null;
     const params = parsed?.params ?? {};
 
@@ -1104,6 +1107,12 @@ export function createProductEngine({
     journal.push({
       ts: now(), trigger, stats, health, critique, applied,
       versionCreated: changed || lossTriggered, llmFailed: !llmOk,
+      // Why it failed: a thrown call (network) vs prose we could not parse —
+      // plus a raw snippet so unparseable output is diagnosable later.
+      ...(llmOk ? {} : {
+        failReason: llmThrew ? 'llm-error' : 'unparseable',
+        ...(llmThrew ? {} : { rawSnippet: String(raw ?? '').slice(0, 160) }),
+      }),
     });
     db.putState(pkey('reflections'), journal.slice(-100));
     // Advance the cool-down clocks ONLY on a parseable LLM response — a

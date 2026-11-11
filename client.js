@@ -548,9 +548,15 @@ window.__ModuleLoader__.load({
       const reflections = (state.reflections ?? []).slice(-1).map((r, i) => h('li', { key: i },
         h('div', null,
           h('span', { className: 'ai-src' }, new Date(r.ts).toLocaleString('zh-CN')),
-          h('span', { className: 'ai-chip' }, r.trigger === 'loss' ? '亏损触发' : r.trigger === 'periodic' ? '定期复盘' : '手动复盘'),
+          h('span', { className: 'ai-chip' },
+            r.trigger === 'loss' ? '亏损触发'
+              : r.trigger === 'periodic' ? '定期复盘'
+                : r.trigger === 'health' ? '健康诊断' : '手动复盘'),
           r.versionCreated ? h('span', { className: 'ai-chip' }, '新版本') : null),
-        h('div', { className: 'ai-strat-text' }, String(r.critique ?? '—'))));
+        h('div', { className: 'ai-strat-text' },
+          String(r.critique ?? (r.llmFailed
+            ? `复盘未完成（${r.failReason === 'llm-error' ? 'LLM 调用失败' : 'LLM 输出不可解析'}），已安排自动重试`
+            : '无结论（历史记录，当时未捕获失败原因）')))));
 
       const trades = (state.trades ?? []).slice(0, 10).map((t, i) => h('tr', { key: i },
         h('td', null, new Date(t.ts).toLocaleString('zh-CN')),
