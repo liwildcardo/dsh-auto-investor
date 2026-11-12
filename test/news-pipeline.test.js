@@ -256,6 +256,16 @@ test('slow products poll hourly and zero-yield sources are dropped (P3/P5)', asy
   assert.ok(!DEFAULT_FEEDS.some(f => f.name === '人民网财经'), 'zero-yield source removed from DEFAULT_FEEDS');
   assert.ok(!ps.hk.news.feeds.some(f => f.name === 'CNBC财经'), 'hk CNBC (0 rows all-time) removed');
   assert.ok(ps.us.news.feeds.some(f => f.name === 'CNBC财经'), 'us CNBC (84 rows/7d) kept');
+  // Dead evolvable paths (referencing dropped contract signals) are silently
+  // un-applicable on fresh installs — none may remain (audit I3).
+  for (const p of Object.values(ps)) {
+    const ids = new Set((p.strategy.signals ?? []).map(s => s.id));
+    const dead = (p.strategy.evolvable ?? []).filter(w => {
+      const m = /^signals\.([^.]+)\./.exec(w.path);
+      return m && !ids.has(m[1]);
+    });
+    assert.deepEqual(dead.map(w => w.path), [], `${p.id} evolvable paths must resolve to contract signals`);
+  }
 });
 
 test('status news lists dated items before undated estimates', async (t) => {

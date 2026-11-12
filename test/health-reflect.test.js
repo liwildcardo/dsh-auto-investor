@@ -22,7 +22,7 @@ function entry({ picked = [], rejection = null, signals = [], llmError = null } 
 }
 const sig = (id, note = '', extra = {}) => ({ id, score: 0, note, weight: 1, ...extra });
 
-function harness(t, { journal, evolvable, risk = {}, clock, newsIngest } = {}) {
+function harness(t, { journal, evolvable, risk = {}, clock, newsIngest, llm } = {}) {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-health-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
   const state = { price: 10, prevClose: 10, volume: 100 };
@@ -58,11 +58,52 @@ function harness(t, { journal, evolvable, risk = {}, clock, newsIngest } = {}) {
   }
   if (journal) db.putState('product:hlth:decisions', journal);
   const engine = createProductEngine({
-    db, product, fetchFn: async () => ({ ok: true }), llm: async () => '{}',
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: llm ?? (async () => '{}'),
     now: clock ?? (() => OPEN), newsIngest,
   });
   return { engine, db, state };
 }
+
+test('health shrink SNAPS off-grid proposals down instead of rejecting (audit C1)', async (t) => {
+  const dead = Array.from({ length: 25 }, () => entry({
+    rejection: '标的不在候选或持仓中',
+    signals: [sig('trend', '数据不足')],
+  }));
+  const llm = async () => JSON.stringify({
+    critique: 'bars 25 < slow 需求，缩回看',
+    params: { 'signals.trend.params.slow': 17, 'signals.rsi.params.period': 14 },
+  });
+  const { engine, db } = harness(t, {
+    journal: dead,
+    llm,
+    // step=5 grid: the model's 17 is off-grid — the old exact-match rejected
+    // it and the fix was lost; it must snap DOWN to 15 (still a shrink).
+    evolvable: [{ path: 'signals.trend.params.slow', min: 5, max: 60, step: 5 }],
+  });
+  const r = await engine.reflectIfDue();
+  assert.equal(r.reflected, true, 'health trigger fired');
+  assert.deepEqual(r.applied, { 'signals.trend.params.slow': 15 }, 'off-grid proposal snapped down');
+  assert.equal(r.versionCreated, true, 'version forked with the snapped fix');
+  const last = (db.getState('product:hlth:reflections') ?? []).at(-1);
+  assert.deepEqual(last.params, { 'signals.trend.params.slow': 17, 'signals.rsi.params.period': 14 }, 'raw proposal recorded (audit C2)');
+  assert.ok(last.rejected?.some(x => x.path === 'signals.rsi.params.period' && x.reason === 'not-evolvable'), 'rejection reason recorded');
+});
+
+test('manual reflection below the sample floor records sample-floor rejection (audit C2)', async (t) => {
+  const llm = async () => JSON.stringify({
+    critique: '建议收紧止损',
+    params: { 'risk.stopLossPct': -4 },
+  });
+  const { engine, db } = harness(t, { llm }); // floor=5, fills=0, force→manual (not health)
+  const r = await engine.reflectIfDue({ force: true });
+  assert.equal(r.reflected, true);
+  assert.deepEqual(r.applied, {}, 'no tuning below the floor');
+  assert.equal(r.versionCreated, false);
+  const last = (db.getState('product:hlth:reflections') ?? []).at(-1);
+  assert.deepEqual(last.params, { 'risk.stopLossPct': -4 }, 'raw proposal kept');
+  assert.ok(last.rejected?.some(x => x.reason === 'sample-floor'), 'the blocker is named');
+});
 
 test('decision-cycle ingest is stale-guarded by the poll interval (frequency review P2)', async (t) => {
   let clock = OPEN;

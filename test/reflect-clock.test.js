@@ -153,6 +153,51 @@ test('a forked version records the critique that created it', async (t) => {
   assert.equal(r.version.critique, '收紧止损更稳', 'per-version critique stored (paged in the UI)');
 });
 
+test('applyParams records the raw proposal and names each rejection (audit C2/M7)', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rrej-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = makeProduct();
+  for (let i = 0; i < 25; i += 1) {
+    db.insertPoint({ ts: OPEN - (25 - i) * DAY, product: 'rc', symbol: 'x', price: 10 - (24 - i) * 0.01 });
+  }
+  let proposal = -50; // equals the current stopLossPct (-50) → no-change
+  const engine = createProductEngine({
+    db, product, fetchFn: async () => ({ ok: true }),
+    llm: async () => JSON.stringify({ critique: '调整止损', params: { 'risk.stopLossPct': proposal } }),
+    now: () => OPEN,
+  });
+  const r1 = await engine.reflectIfDue({ force: true });
+  assert.deepEqual(r1.applied, {}, 'a no-op proposal applies nothing');
+  assert.equal(r1.versionCreated, false, 'no empty version fork');
+  let last = (db.getState('product:rc:reflections') ?? []).at(-1);
+  assert.deepEqual(last.params, { 'risk.stopLossPct': -50 }, 'raw proposal recorded');
+  assert.ok(last.rejected?.some(x => x.reason === 'no-change'), 'no-change named');
+
+  proposal = -5; // 45-point jump from -50, allowed is 10 → jump-guard
+  await engine.reflectIfDue({ force: true });
+  last = (db.getState('product:rc:reflections') ?? []).at(-1);
+  assert.ok(last.rejected?.some(x => x.reason === 'jump-guard'), 'jump-guard named');
+  assert.equal(last.versionCreated, false);
+});
+
+test('historical versions recover their critique from the journal (audit M9)', (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rback-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = makeProduct();
+  const mk = (id) => ({ id, createdAt: id, strategy: { signals: [{ id: 'trend' }], risk: {} }, startPnl: 0, critique: null });
+  db.putState('product:rc:versions', [mk(1), mk(2), mk(3)]);
+  db.putState('product:rc:reflections', [
+    { ts: 10, versionCreated: true, critique: 'A理由' },
+    { ts: 20, versionCreated: false, critique: '不分叉的复盘' },
+    { ts: 30, versionCreated: true, critique: 'B理由' },
+  ]);
+  createProductEngine({ db, product, fetchFn: async () => ({ ok: true }), llm: async () => '{}', now: () => OPEN });
+  const v = db.getState('product:rc:versions');
+  assert.equal(v[0].critique, null, 'v1 untouched');
+  assert.equal(v[1].critique, 'A理由', 'first forked version gets the first fork critique');
+  assert.equal(v[2].critique, 'B理由', 'non-fork entries do not shift the mapping');
+});
+
 test('a successful reflection advances the cool-down (R2)', async (t) => {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-rclock2-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());

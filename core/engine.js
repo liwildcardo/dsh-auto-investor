@@ -106,6 +106,25 @@ export function createProductEngine({
         changed = true;
       }
     }
+    // Historical forks predate `version.critique` (added 2026-11-12): recover
+    // the reasons from the reflection journal so the paged 策略版本 card can
+    // show WHY each old version exists. Journal versionCreated entries map to
+    // versions[1..] in creation order; entries are consumed in lockstep so a
+    // version that already carries a critique still advances the pointer.
+    const journal = db.getState(pkey('reflections')) ?? [];
+    if (journal.length && versions.length > 1) {
+      let ji = 0;
+      for (let vi = 1; vi < versions.length && ji < journal.length; vi += 1) {
+        while (ji < journal.length && !journal[ji].versionCreated) ji += 1;
+        if (ji >= journal.length) break;
+        const e = journal[ji];
+        ji += 1;
+        if (versions[vi].critique == null && e.critique) {
+          versions[vi].critique = e.critique;
+          changed = true;
+        }
+      }
+    }
     if (changed) persist();
   }
   normalizeVersions();
@@ -951,21 +970,29 @@ export function createProductEngine({
    * alignment are enforced, but the performance jump-guard is not — direction
    * is already validated (new < current), and a shorter lookback can never
    * loosen a risk control. This is the bootstrap escape from the sample floor.
+   * Off-grid proposals SNAP DOWN to the step grid (23 with step5 → 20):
+   * rejecting them outright silently discarded valid shrink fixes (audit C1).
    */
-  function applyShrinkOnly(nextStrategy, params) {
+  function applyShrinkOnly(nextStrategy, params, rejected = []) {
     const applied = {};
     const evolvable = cfg.strategy.evolvable ?? [];
     for (const [path, value] of Object.entries(params ?? {})) {
-      if (!SHRINK_PATH.test(path)) continue;
+      if (!SHRINK_PATH.test(path)) { rejected.push({ path, reason: 'not-shrink-path' }); continue; }
       const w = evolvable.find(x => x.path === path);
-      if (!w) continue;
+      if (!w) { rejected.push({ path, reason: 'not-evolvable' }); continue; }
       const v = Number(value);
       const cur = getPath(current().strategy, path);
-      if (!Number.isFinite(v) || !Number.isFinite(cur) || !(v < cur)) continue;
-      if (v < w.min || v > w.max) continue;
+      if (!Number.isFinite(v) || !Number.isFinite(cur)) { rejected.push({ path, reason: 'bad-value' }); continue; }
       const step = w.step ?? 0;
-      if (step > 0 && Math.abs(w.min + Math.round((v - w.min) / step) * step - v) > 1e-9) continue;
-      if (setPath(nextStrategy, path, v)) applied[path] = v;
+      const snapped = step > 0 && Number.isFinite(w.min)
+        ? w.min + Math.floor((v - w.min) / step) * step
+        : v;
+      if (!Number.isFinite(snapped)) { rejected.push({ path, reason: 'bad-value' }); continue; }
+      if (!(snapped < cur)) { rejected.push({ path, reason: 'not-smaller' }); continue; }
+      if (Number.isFinite(w.min) && snapped < w.min) { rejected.push({ path, reason: 'below-min' }); continue; }
+      if (Number.isFinite(w.max) && snapped > w.max) { rejected.push({ path, reason: 'above-max' }); continue; }
+      if (setPath(nextStrategy, path, snapped)) applied[path] = snapped;
+      else rejected.push({ path, reason: 'set-failed' });
     }
     return applied;
   }
@@ -1035,16 +1062,16 @@ export function createProductEngine({
   }
 
   /** Apply only whitelisted, bounded parameter changes; returns applied patches. */
-  function applyParams(target, params) {
+  function applyParams(target, params, rejected = []) {
     const whitelist = cfg.strategy.evolvable ?? [];
     const applied = {};
     let changes = 0;
     for (const [path, raw] of Object.entries(params ?? {})) {
-      if (changes >= 3) break; // anti-overfit: at most three parameters per review
+      if (changes >= 3) { rejected.push({ path, reason: 'cap-3' }); break; } // anti-overfit: ≤3 params per review
       const spec = whitelist.find(w => w.path === path);
-      if (!spec) continue;
+      if (!spec) { rejected.push({ path, reason: 'not-evolvable' }); continue; }
       let value = Number(raw);
-      if (!Number.isFinite(value)) continue;
+      if (!Number.isFinite(value)) { rejected.push({ path, reason: 'bad-value' }); continue; }
       if (Number.isFinite(spec.min)) value = Math.max(spec.min, value);
       if (Number.isFinite(spec.max)) value = Math.min(spec.max, value);
       if (Number.isFinite(spec.step) && spec.step > 0) {
@@ -1056,11 +1083,16 @@ export function createProductEngine({
         // Anti-overfit: at most 20% change per review, but never less than two
         // discrete steps (otherwise a coarse step size freezes the parameter).
         const allowed = Math.max(Math.abs(currentValue) * 0.2, 2 * (Number(spec.step) || 0));
-        if (Math.abs(value - currentValue) > allowed + 1e-9) continue;
+        if (Math.abs(value - currentValue) > allowed + 1e-9) { rejected.push({ path, reason: 'jump-guard' }); continue; }
+        // Rounding can land on the current value — that is a no-op, not a
+        // version-worthy change (audit M7: 5→5 was recorded as applied).
+        if (Math.abs(value - currentValue) <= 1e-9) { rejected.push({ path, reason: 'no-change' }); continue; }
       }
       if (setPath(target, path, value)) {
         applied[path] = value;
         changes += 1;
+      } else {
+        rejected.push({ path, reason: 'set-failed' });
       }
     }
     return applied;
@@ -1136,11 +1168,12 @@ export function createProductEngine({
     // critique is recorded — EXCEPT a health-triggered reflection may apply
     // shrink-only lookback fixes (shorter lookback cannot loosen any risk).
     const canEvolve = stats.fills >= (effectiveRisk().minSamplesToEvolve ?? 5);
+    const rejected = [];
     const applied = canEvolve
-      ? applyParams(next.strategy, params)
+      ? applyParams(next.strategy, params, rejected)
       : trigger === 'health'
-        ? applyShrinkOnly(next.strategy, params)
-        : {};
+        ? applyShrinkOnly(next.strategy, params, rejected)
+        : (Object.keys(params).length ? (rejected.push({ path: '*', reason: 'sample-floor' }), {}) : {});
     const changed = Object.keys(applied).length > 0;
     const llmOk = parsed != null; // thrown/failed LLM must not consume the cool-down
     // No junk version forks when the LLM failed: a failed loss-triggered
@@ -1149,6 +1182,10 @@ export function createProductEngine({
     const entry = {
       ts: now(), trigger, stats, health, critique, applied,
       versionCreated: willFork, llmFailed: !llmOk,
+      // Raw proposal + per-path rejection reasons: distinguishes "the model
+      // proposed nothing" from "everything was filtered out" (audit C2).
+      ...(Object.keys(params).length ? { params } : {}),
+      ...(rejected.length ? { rejected } : {}),
       // Why it failed: a thrown call (network) vs prose we could not parse —
       // plus the error message / raw snippet so failures are diagnosable.
       ...(llmOk ? {} : {

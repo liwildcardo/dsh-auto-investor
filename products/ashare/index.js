@@ -69,7 +69,7 @@ export default {
     evolvable: [
       { path: 'signals.trend.params.slow', min: 10, max: 120, step: 5 },
       { path: 'signals.momentum.params.threshold', min: 0.01, max: 0.1, step: 0.005 },
-      { path: 'signals.volume.params.hot', min: 1.2, max: 3, step: 0.1 },
+      { path: 'signals.rsi.params.period', min: 5, max: 30, step: 1 },
       { path: 'risk.stopLossPct', min: -12, max: -1, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 2, max: 30, step: 0.5 },
       { path: 'signals.valuation.weight', min: 0, max: 2, step: 0.1 },
