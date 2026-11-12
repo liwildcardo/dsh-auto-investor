@@ -170,3 +170,51 @@ test('hub dispatches calls to the right product engine', async (t) => {
   assert.equal(hub.status('gold').paused, false);
   assert.throws(() => hub.status('bogus'), /unknown product/, 'typo must not fall back to another product');
 });
+
+test('chart series stays in-session after close (flat-line fix)', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-flat-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = loadProducts({ enabled: ['ashare'] })[0];
+  // Thursday 2026-11-12: session 09:30–11:30 HKT = 01:30–03:30 UTC.
+  const sessionStart = Date.UTC(2026, 10, 12, 1, 30);
+  for (let i = 0; i < 60; i += 1) {
+    db.insertPoint({ ts: sessionStart + i * 60_000, product: 'ashare', symbol: 'sh600519', price: 1400 + (i % 7) });
+  }
+  // The old bug's raw material: 200 identical frozen points from 15:05 HKT.
+  const floodStart = Date.UTC(2026, 10, 12, 7, 5);
+  for (let i = 0; i < 200; i += 1) {
+    db.insertPoint({ ts: floodStart + i * 60_000, product: 'ashare', symbol: 'sh600519', price: 1410 });
+  }
+  const closedNow = Date.UTC(2026, 10, 12, 10, 20); // 18:20 HKT — market closed
+  const engine = createProductEngine({
+    db, product,
+    fetchFn: async () => ({ ok: true, text: async () => '', json: async () => ({}) }),
+    llm: async () => '{}', now: () => closedNow,
+  });
+  const s = engine.status().series;
+  assert.ok(s.length > 0 && s.length <= 120, `bounded window, got ${s.length}`);
+  const distinct = new Set(s.map(p => p.price)).size;
+  assert.ok(distinct > 1, `session movement stays visible, distinct=${distinct}`);
+  // The frozen flood collapses to at most the official close itself.
+  assert.ok(s.filter(p => p.ts >= floodStart).length <= 1, 'frozen post-close run collapsed');
+});
+
+test('closed-hour polls insert no points (flat-line root cause)', async (t) => {
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-noflood-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  const product = loadProducts({ enabled: ['ashare'] })[0];
+  const body = '1~贵州茅台~600519~1400.00~1395.00~1396.00~500';
+  const fetchFn = async () => ({
+    ok: true,
+    text: async () => `v_sh600519="${body}"`,
+    json: async () => ({}),
+  });
+  let clock = Date.UTC(2026, 10, 12, 10, 20); // 18:20 HKT — closed
+  const engine = createProductEngine({ db, product, fetchFn, llm: async () => '{}', now: () => clock });
+  await engine.tick();
+  assert.equal(db.listPoints('ashare', 'sh600519', 100).length, 0, 'no closed-hour point written');
+  clock = Date.UTC(2026, 10, 12, 2, 0); // 10:00 HKT — in session
+  await engine.tick();
+  assert.equal(db.listPoints('ashare', 'sh600519', 100).length, 1, 'in-session point written');
+  assert.equal(engine.status().series.length, 1, 'chart shows the session point');
+});

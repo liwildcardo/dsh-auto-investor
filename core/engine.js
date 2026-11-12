@@ -177,19 +177,27 @@ export function createProductEngine({
     // the first in-session tick is the session open, a midnight/closed tick is
     // a stale quote that must not become "today's" baseline.
     const sessionOpen = isSessionOpen(cfg.rules, now(), cfg.timezone);
+    // Out-of-session polls carry a frozen quote: inserting them flooded the
+    // DB (~2.8k identical rows/day) and pushed every in-session point out of
+    // the chart's count window — the "straight line" bug. Skip them entirely;
+    // the last in-session point IS the official close.
     if (product.market.kind === 'single') {
       quote = raw;
-      db.insertTick({ ts: quoteTs, mid: raw.price, buy: raw.buy, sell: raw.sell, product: product.id });
-      if (sessionOpen) recordDayOpen({ [pool()[0]?.symbol ?? product.id]: raw.price });
+      if (sessionOpen) {
+        db.insertTick({ ts: quoteTs, mid: raw.price, buy: raw.buy, sell: raw.sell, product: product.id });
+        recordDayOpen({ [pool()[0]?.symbol ?? product.id]: raw.price });
+      }
     } else {
       quote = Object.fromEntries(raw.quotes.map(q => [q.symbol, q]));
-      for (const q of raw.quotes) {
-        db.insertPoint({
-          ts: quoteTs, product: product.id, symbol: q.symbol,
-          price: q.price, open: q.open, volume: q.volume, pe: q.pe ?? null,
-        });
+      if (sessionOpen) {
+        for (const q of raw.quotes) {
+          db.insertPoint({
+            ts: quoteTs, product: product.id, symbol: q.symbol,
+            price: q.price, open: q.open, volume: q.volume, pe: q.pe ?? null,
+          });
+        }
+        recordDayOpen(Object.fromEntries(raw.quotes.map(q => [q.symbol, q.price])));
       }
-      if (sessionOpen) recordDayOpen(Object.fromEntries(raw.quotes.map(q => [q.symbol, q.price])));
     }
     await seedHistory().catch(() => {});
     await refreshFx().catch(() => {});
@@ -802,9 +810,24 @@ export function createProductEngine({
     const watchSymbol = (symbol && poolList.some(w => w.symbol === symbol))
       ? symbol
       : (poolList[0]?.symbol ?? product.id);
-    const series = product.market.kind === 'single'
-      ? db.latestTicksByProduct(product.id, 120).map(t => ({ ts: t.ts, price: t.price }))
-      : db.listPoints(product.id, watchSymbol, 120).map(p => ({ ts: p.ts, price: p.price }));
+    // Chart window: collapse frozen out-of-session runs (post-close polls
+    // repeated the same price hundreds of times — the "straight line" bug)
+    // while keeping every in-session point, the official close, and daily
+    // seed bars (their midnight timestamps are out-of-session but change
+    // price, so they survive the dedup).
+    const series = (() => {
+      const rows = product.market.kind === 'single'
+        ? db.latestTicksByProduct(product.id, 1500)
+        : db.listPoints(product.id, watchSymbol, 1500);
+      const kept = [];
+      let prevPrice = null;
+      for (const r of rows) {
+        const inS = isSessionOpen(cfg.rules, r.ts, cfg.timezone);
+        if (inS || prevPrice === null || r.price !== prevPrice) kept.push(r);
+        prevPrice = r.price;
+      }
+      return kept.slice(-120).map(r => ({ ts: r.ts, price: r.price }));
+    })();
     return jsonSafe({
       product: { id: cfg.id, name: cfg.name, currency: cfg.currency, unit: cfg.rules?.unit ?? 'share', kind: cfg.market?.kind ?? 'multi', order: cfg.order },
       quote,
