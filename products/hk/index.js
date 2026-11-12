@@ -37,8 +37,8 @@ export default {
     feeds: [
       { name: '新浪港股', kind: 'html', url: 'https://finance.sina.com.cn/stock/hkstock/', linkPattern: 'href="(https://finance\\.sina\\.com\\.cn/stock/hkstock/[^"]+\\.shtml)"[^>]*>([^<]{8,80})</a>' },
       { name: '中新网财经', kind: 'rss', url: 'https://www.chinanews.com.cn/rss/finance.xml' },
-      { name: 'CNBC财经', kind: 'rss', url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
     ],
+    pollMin: 60, // slow sources publish <1 item/hour — hourly is enough (frequency review P3)
     queries: ['港股 恒生指数 走势', '南向资金 港股', '香港 上市公司 业绩'],
     relevance: {
       core: ['港股', '恒生', '港交所', '南向资金', '业绩'],

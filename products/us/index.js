@@ -37,6 +37,7 @@ export default {
     feeds: [
       { name: 'CNBC财经', kind: 'rss', url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
     ],
+    pollMin: 60, // slow sources publish <1 item/hour — hourly is enough (frequency review P3)
     queries: ['US stock market today', 'Federal Reserve rate decision stocks', '美股 财报 科技股'],
     relevance: {
       core: ['美股', '股票', 'S&P', 'Nasdaq', 'earnings', 'Fed'],

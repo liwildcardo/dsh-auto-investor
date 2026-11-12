@@ -35,6 +35,7 @@ export default {
 
   news: {
     feeds: DEFAULT_FEEDS,
+    pollMin: 60, // slow sources publish <1 item/hour — hourly is enough (frequency review P3)
     queries: ['央行增持黄金', '伦敦金 黄金价格 走势', '美联储 利率 黄金'],
     relevanceMode: 'gold',
     relevance: {

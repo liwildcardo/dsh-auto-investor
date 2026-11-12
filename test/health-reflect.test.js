@@ -22,7 +22,7 @@ function entry({ picked = [], rejection = null, signals = [], llmError = null } 
 }
 const sig = (id, note = '', extra = {}) => ({ id, score: 0, note, weight: 1, ...extra });
 
-function harness(t, { journal, evolvable, risk = {} } = {}) {
+function harness(t, { journal, evolvable, risk = {}, clock, newsIngest } = {}) {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-health-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
   const state = { price: 10, prevClose: 10, volume: 100 };
@@ -58,10 +58,27 @@ function harness(t, { journal, evolvable, risk = {} } = {}) {
   }
   if (journal) db.putState('product:hlth:decisions', journal);
   const engine = createProductEngine({
-    db, product, fetchFn: async () => ({ ok: true }), llm: async () => '{}', now: () => OPEN,
+    db, product, fetchFn: async () => ({ ok: true }), llm: async () => '{}',
+    now: clock ?? (() => OPEN), newsIngest,
   });
   return { engine, db, state };
 }
+
+test('decision-cycle ingest is stale-guarded by the poll interval (frequency review P2)', async (t) => {
+  let clock = OPEN;
+  let ingests = 0;
+  const { engine } = harness(t, {
+    clock: () => clock,
+    newsIngest: async () => { ingests += 1; return { ts: clock }; },
+  });
+  await engine.runCycle();        // boot: no lastIngest → ingest (#1)
+  clock += 60_000;                // 1 minute later, inside the 15-min window
+  await engine.runCycle();
+  assert.equal(ingests, 1, 'fresh ingest is not repeated inside the poll interval');
+  clock += 16 * 60_000;           // beyond newsPollMin
+  await engine.runCycle();
+  assert.equal(ingests, 2, 'stale ingest is refreshed by the decision cycle');
+});
 
 test('healthStats: candidate rate, rejection breakdown, signal coverage', (t) => {
   const journal = [

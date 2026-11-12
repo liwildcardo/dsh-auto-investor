@@ -8,7 +8,7 @@ import { openDb } from './lib/db.js';
 import { registerTools } from './lib/tools.js';
 import { registerRoutes } from './lib/routes.js';
 import { collectStream } from './lib/llm.js';
-import { normalizeWebSearch } from './lib/news.js';
+import { createSearchFn } from './lib/news.js';
 import { makeRoutingFetch } from './lib/fallback-fetch.js';
 import { createCycleSchedule, assessCycle, firstDelayMs } from './lib/scheduler.js';
 import { loadProducts, mergeProduct } from './core/registry.js';
@@ -89,18 +89,7 @@ export function apply(ctx, config) {
   const web = ctx.get('web');
   const fetchFn = makeRoutingFetch((url, opts) => globalThis.fetch(url, opts), web);
 
-  const searchFn = web
-    ? async (queries) => {
-      const items = [];
-      for (const query of queries) {
-        try {
-          const res = await web.search({ query, maxResults: 5 });
-          items.push(...normalizeWebSearch(res));
-        } catch { /* one failed query must not kill enrichment */ }
-      }
-      return items;
-    }
-    : undefined;
+  const searchFn = createSearchFn(web);
 
   const products = loadProducts({
     enabled: Array.isArray(config?.products) ? config.products : undefined,
@@ -137,6 +126,9 @@ export function apply(ctx, config) {
       db, product, llm: llmCall, fetchFn, now,
       newsIngest: news.ingest,
       newsList: news.list,
+      newsSearch: news.searchWeb,
+      newsBackfill: news.backfill,
+      newsPollMin: cfg.newsPollMin,
       llmInfo,
     });
   });
@@ -163,13 +155,28 @@ export function apply(ctx, config) {
     }
   });
 
-  // News polling (market feeds + per-symbol cache) for every product.
-  every(cfg.newsPollMin * 60_000, 'auto-investor: news poll', () => {
-    for (const e of engines) {
-      if (e.paused) continue;
-      e.ingestNews?.().catch(() => {});
-    }
-  });
+  // News polling: per-product feed cadence (product.news.pollMin ?? default).
+  // Fast market (A股/东方财富) stays at the default; slow, day-granular
+  // sources (gold/hk/us) poll hourly — frequency review P3.
+  for (const [i, engine] of engines.entries()) {
+    const minutes = products[i]?.news?.pollMin ?? cfg.newsPollMin;
+    every(minutes * 60_000 + i * 1500, `auto-investor: news poll ${i}`, () => {
+      if (engine.paused) return;
+      engine.ingestNews?.().catch(() => {});
+    });
+    // Product web-search on a slow cadence: static queries exhaust their
+    // top-5 within days and web.search quota is scarce (review P4).
+    every((cfg.searchPollMin ?? 240) * 60_000 + i * 1500, `auto-investor: news search ${i}`, () => {
+      if (engine.paused) return;
+      engine.searchNews?.().catch(() => {});
+    });
+    // Publish-date backfill off the decision path, every 6h; per-URL attempts
+    // are capped inside backfillPublishDates (review P1).
+    every(6 * 3600_000 + i * 3000, `auto-investor: news backfill ${i}`, () => {
+      if (engine.paused) return;
+      engine.backfillDates?.().catch(() => {});
+    });
+  }
 
   // Strategy cycles: outcome-aware self-scheduling (robustness R1) — a fast
   // first run after activation, exponential backoff on failures (throw /

@@ -167,6 +167,97 @@ test('backfillPublishDates removes an item once its real date proves it stale', 
   assert.equal(rows.length, 0);
 });
 
+test('backfill benches a failing URL after 3 attempts (frequency review P1)', async () => {
+  const rows = [
+    { hash: 'hx', ts: 1000, tsEstimated: true, source: 's', title: 't', url: 'https://x.example/a', summary: '' },
+  ];
+  const state = {};
+  const db = {
+    latestNews: () => rows,
+    upsertNews() { throw new Error('never resolves'); },
+    removeNews() { return 0; },
+    getState: (k) => state[k],
+    putState: (k, v) => { state[k] = v; },
+  };
+  let calls = 0;
+  const fetchFn = async () => { calls += 1; return { ok: false, status: 404, text: async () => '' }; };
+  const cfg = { newsMaxAgeDays: 60, productId: 'px' };
+  for (let i = 0; i < 3; i += 1) await backfillPublishDates(fetchFn, db, 5, cfg);
+  assert.equal(calls, 3, 'three attempts allowed');
+  await backfillPublishDates(fetchFn, db, 5, cfg);
+  assert.equal(calls, 3, 'fourth attempt benched (no more fetches for this URL)');
+  assert.equal(state['backfillTries:px'].hx, 3, 'attempt count recorded');
+  // A different product retries independently (state is product-scoped).
+  const cfg2 = { newsMaxAgeDays: 60, productId: 'py' };
+  await backfillPublishDates(fetchFn, db, 5, cfg2);
+  assert.equal(calls, 4, 'other products unaffected');
+});
+
+test('product web-search runs on its own path, not every feed ingest (P4)', async (t) => {
+  const { openDb } = await import('../lib/db.js');
+  const { createProductNews } = await import('../core/news-service.js');
+  const { join } = await import('node:path');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-split-')), 'x.db'), { backend: 'json' });
+  t.after(() => db.close());
+  let searchCalls = 0;
+  const product = {
+    id: 'px',
+    news: { feeds: [], queries: ['q1'], perSymbol: false, relevance: { core: [], context: [] } },
+  };
+  const fetchFn = async () => ({ ok: true, text: async () => '' });
+  const svc = createProductNews({
+    db, product, fetchFn, searchFn: async () => { searchCalls += 1; return []; },
+    now: () => Date.now(), cfg: { newsMaxAgeDays: 60 },
+  });
+  const ing = await svc.ingest();
+  assert.equal(searchCalls, 0, 'feed ingest does not burn web.search quota');
+  assert.ok('perSymbol' in ing && 'ts' in ing, 'ingest keeps its feed shape');
+  const s = await svc.searchWeb();
+  assert.equal(searchCalls, 1, 'searchWeb runs the product queries');
+  assert.ok('searched' in s && 'searchError' in s);
+
+  // A provider outage is now visible (was structurally always-null before).
+  const svc2 = createProductNews({
+    db, product, fetchFn, searchFn: async () => { throw new Error('quota exceeded'); },
+    now: () => Date.now(), cfg: { newsMaxAgeDays: 60 },
+  });
+  const s2 = await svc2.searchWeb();
+  assert.equal(s2.searchError, 'quota exceeded', 'all-query failure surfaces as searchError');
+});
+
+test('createSearchFn throws only when every query failed (P4)', async () => {
+  const { createSearchFn } = await import('../lib/news.js');
+  const ok = createSearchFn({ search: async () => ({ sources: [{ url: 'u', title: 't' }] }) });
+  const items = await ok(['a', 'b']);
+  assert.equal(items.length, 2, 'one item per query');
+  const allFail = createSearchFn({ search: async () => { throw new Error('down'); } });
+  await assert.rejects(() => allFail(['a', 'b']), /down/);
+  const empty = createSearchFn({ search: async () => ({ sources: [] }) });
+  assert.deepEqual(await empty(['a']), [], 'empty results are not an error');
+  const partial = createSearchFn({
+    search: async (req) => {
+      if (req.query === 'bad') throw new Error('x');
+      return { sources: [{ url: 'u2', title: 't2' }] };
+    },
+  });
+  assert.equal((await partial(['bad', 'good'])).length, 1, 'partial failure still returns items');
+  assert.equal(createSearchFn(undefined), undefined);
+});
+
+test('slow products poll hourly and zero-yield sources are dropped (P3/P5)', async () => {
+  const { loadProducts } = await import('../core/registry.js');
+  const ps = Object.fromEntries(loadProducts({ enabled: ['gold', 'ashare', 'us', 'hk'] }).map(p => [p.id, p]));
+  assert.equal(ps.gold.news.pollMin, 60, 'gold hourly (14 items/day, 91% zero-yield ingests)');
+  assert.equal(ps.hk.news.pollMin, 60, 'hk hourly');
+  assert.equal(ps.us.news.pollMin, 60, 'us hourly');
+  assert.equal(ps.ashare.news.pollMin, undefined, 'ashare keeps the default 15min (fast source)');
+  assert.ok(!DEFAULT_FEEDS.some(f => f.name === '人民网财经'), 'zero-yield source removed from DEFAULT_FEEDS');
+  assert.ok(!ps.hk.news.feeds.some(f => f.name === 'CNBC财经'), 'hk CNBC (0 rows all-time) removed');
+  assert.ok(ps.us.news.feeds.some(f => f.name === 'CNBC财经'), 'us CNBC (84 rows/7d) kept');
+});
+
 test('status news lists dated items before undated estimates', async (t) => {
   const { openDb } = await import('../lib/db.js');
   const { resolveConfig } = await import('../lib/config.js');

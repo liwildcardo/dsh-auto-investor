@@ -17,7 +17,8 @@ const DEFAULT_SERIES = 240;
 
 export function createProductEngine({
   db, product, llm, fetchFn, now = () => Date.now(), searchFn = undefined,
-  newsIngest = null, newsList = null, llmInfo = null,
+  newsIngest = null, newsList = null, newsSearch = null, newsBackfill = null,
+  newsPollMin = 15, llmInfo = null,
 }) {
   const pkey = (k) => `product:${product.id}:${k}`;
   const cfg = product;
@@ -29,6 +30,7 @@ export function createProductEngine({
   let quote = null;          // {price, buy, sell} for single, or {symbol → q}
   let quoteTs = 0;
   let lastIngest = null;
+  let lastSearch = null; // last product web-search outcome (own slow timer)
   let lastRun = null;
   let lastReflectAt = db.getState(pkey('lastReflectAt')) ?? now();
   let fxRate = db.getState(pkey('fx')) ?? null; // {rate, ts} for non-CNY products
@@ -674,7 +676,14 @@ export function createProductEngine({
       return jsonSafe({ decision, trades: [], rejection: null, llmError: null, paused, circuitBreaker: true, ingest: lastIngest, quoteTs });
     }
     if (newsIngest) {
-      try { lastIngest = await newsIngest(); } catch { /* news is best-effort */ }
+      try {
+        // The poll timer owns freshness; the decision cycle only refreshes
+        // when the last ingest is already older than the poll interval
+        // (lastIngest is null on boot → the boot ingest still runs).
+        if (!lastIngest?.ts || now() - lastIngest.ts >= newsPollMin * 60_000) {
+          lastIngest = await newsIngest();
+        }
+      } catch { /* news is best-effort */ }
     }
     // Macro factors refresh in the BACKGROUND: a slow/unreachable source must
     // never delay a decision cycle (signals simply abstain until data lands).
@@ -816,6 +825,7 @@ export function createProductEngine({
       watchlist: pool(),
       fx: cfg.currency === 'CNY' ? null : fxRate,
       ingest: lastIngest,
+      search: lastSearch,
       llm: typeof llmInfo === 'function' ? llmInfo() : null,
     });
   }
@@ -1158,6 +1168,27 @@ export function createProductEngine({
     return lastIngest;
   }
 
+  /** Product web-search on its own slow timer (searchPollMin). */
+  async function searchNews() {
+    if (typeof newsSearch !== 'function') return null;
+    try {
+      lastSearch = await newsSearch();
+    } catch (e) {
+      lastSearch = { ts: now(), searched: 0, searchError: String(e?.message ?? e).slice(0, 120) };
+    }
+    return lastSearch;
+  }
+
+  /** Publish-date backfill on its own 6h timer, off the decision path. */
+  async function backfillDates() {
+    if (typeof newsBackfill !== 'function') return null;
+    try {
+      return await newsBackfill();
+    } catch {
+      return null;
+    }
+  }
+
   /** Offline check: replay the current signals over the product's signal bars. */
   function runBacktestFor(symbol) {
     const sym = symbol ?? pool()[0]?.symbol ?? product.id;
@@ -1195,6 +1226,8 @@ export function createProductEngine({
     reflectIfDue,
     status,
     ingestNews,
+    searchNews,
+    backfillDates,
     watchlist: () => pool(),
     watchlistAction,
     runBacktest: (symbol) => runBacktestFor(symbol),
