@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <meta name="renderer" content="webkit">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="format-detection" content="telephone=no">
+    <meta name="wap-font-scale" content="no">
+    <title>中国黄金协会</title>
+    <meta name="keywords" content="中国黄金协会" />
+    <meta name="description" content="中国黄金协会" />
+    <link rel="stylesheet" href="/public/css/style.css?v=1.0.3">
+<link rel="stylesheet" href="/public/css/public.css?v=1.0.1">
+<link rel="stylesheet" href="/public/js/swiper/swiper-bundle.min.css">
+<script src="/public/js/swiper/swiper-bundle.min.js"></script>
+<script src="/public/js/plugin.js"></script>
+<script src="/public/js/style.js"></script>
+<script src="/scripts/sweet/sweetalert.min.js"></script>
+<script src="/scripts/jquery/api.js"></script>
+<script src="/public/js/my-js.js"></script>
+
+</head>
+
+<body>
+
+    <div class="w_1200">
+        <!-- 头部开始 -->
+<!-- pc端头部 -->
+<div class="pc_header">
+
+    <div class="header flex justify-between">
+        <div class="logo flex align-center"><a href="/"><img src="/public/images/logo.png"></a></div>
+        <div class="top_r">
+            <div class="top_r_top flex justify-end">
+                                                <a href="/user/index.html">会员登录</a>
+                                <a href="javascript:;" onclick="shoucang(document.title,window.location)">加入收藏</a>
+                                <a href="/contact.html">联系我们</a>
+            </div>
+            <!-- 搜索框 -->
+                        <div class="top_t_bottom flex">
+                <input type="text" placeholder="请输入关键字" name="keywords" id="keywords" onkeydown="if(event.keyCode==13){SiteSearch('/search.html', '#keywords');return false};">
+                <a href="javascript::" onclick="SiteSearch('/search.html', '#keywords');"></a>
+            </div>
+        </div>
+    </div>
+    <!-- 菜单栏 -->
+    <ul class="header_nav  flex">
+                <li><a href="/index.html">首页</a> </li>
+                <li><a href="/about.html">协会概况</a></li>
+                <li><a href="/member.html">会员管理</a></li>
+                <li><a href="/policies.html">政策法规</a></li>
+                <li><a href="/training.html">行业培训</a></li>
+                <li><a href="/technology.html">黄金科技</a></li>
+                <!--<li><a href="/research.html">黄金政研会</a></li>-->
+    </ul>
+    <!-- 次菜单 -->
+    <!--<div class="nav_item01">
+        <div class="nav_item_box">
+            <div class="nav_item flex justify-content wrap">
+                                                <a href="http://www.cgiac.org.cn" target="_blank">黄金投资分析师专家委员会</a>
+                                <a href="http://www.cngold.org.cn/silver.html" target="_blank">白银分会</a>
+                                <a href="http://www.cngold.org.cn/platinum.html" target="_blank">铂钯分会</a>
+                                <a href="http://www.cngold.org.cn/goldtech.html" target="_blank">北京市黄金科技工程咨询有限公司</a>
+                                <a href="http://www.tc379.cn/" target="_blank">全国黄金标准化技术委员会</a>
+                            </div>
+        </div>
+    </div> -->
+
+</div>
+<!-- 手机端头部 -->
+<div class="m_header rel">
+    <div class="header-m abs  md-db">
+        <a href="/" class="logo"><img src="/public/images/logo.png" alt="Logo"></a>
+        <div class="m-menu-b"></div>
+        <div class="m-menu">
+            <ul class="nav hsms">
+                <li>
+                                        <a href="/index.html">首页</a>
+                </li>
+                <li>
+                                        <a href="/about.html">协会概况</a>
+                    <ul class="sub-nav hsms">
+                                                <li>
+                            <a href="/about-139.html">协会简介</a>
+                        </li>
+                                                <li>
+                            <a href="/about-256.html">协会章程</a>
+                        </li>
+                                                <li>
+                            <a href="/about-258.html">组织机构</a>
+                        </li>
+                                                <li>
+                            <a href="/about-286.html">协会负责人</a>
+                        </li>
+                                                <li>
+                            <a href="/about-313.html">监事会</a>
+                        </li>
+                                                <li>
+                            <a href="/about-314.html">协会分支机构及负责人</a>
+                        </li>
+                                            </ul>
+                </li>
+                <li>
+                                        <a href="/member.html">会员管理</a>
+                    <ul class="sub-nav hsms">
+                                                <li>
+                            <a href="/member-259.html">入会流程</a>
+                        </li>
+                                                <li>
+                            <a href="/member-266.html">入会材料</a>
+                        </li>
+                                                <li>
+                            <a href="/member-267.html">入会申请</a>
+                        </li>
+                                                <li>
+                            <a href="/member-315.html">会费标准</a>
+                        </li>
+                                                <li>
+                            <a href="/member-316.html">会员信息</a>
+                        </li>
+                                                <li>
+                            <a href="/member-317.html">会员服务</a>
+                        </li>
+                                            </ul>
+                </li>
+                <li>
+                                        <a href="/policies.html">政策法规</a>
+                    <ul class="sub-nav hsms">
+                                                <li>
+                            <a href="/policies-245.html">法律法规</a>
+                        </li>
+                                                <li>
+                            <a href="/policies-262.html">产业政策</a>
+                        </li>
+                                                <li>
+                            <a href="/policies-281.html">黄金标准</a>
+                        </li>
+                                            </ul>
+                </li>
+                <li>
+                                        <a href="/training.html">行业培训</a>
+                    <ul class="sub-nav hsms">
+                                                <li>
+                            <a href="/training-242.html">黄金投资分析师</a>
+                        </li>
+                                                <li>
+                            <a href="/training-246.html">教育部1+X</a>
+                        </li>
+                                                <li>
+                            <a href="/training-338.html">矿业权评估师</a>
+                        </li>
+                                                <li>
+                            <a href="/training-247.html">其他培训</a>
+                        </li>
+                                            </ul>
+                </li>
+                <li>
+                                        <a href="/technology.html">黄金科技</a>
+                    <ul class="sub-nav hsms">
+                                                <li>
+                            <a href="/technology-318.html">黄金协会科学技术奖</a>
+                        </li>
+                                                <li>
+                            <a href="/technology-319.html">科技成果评价</a>
+                        </li>
+                                                <li>
+                            <a href="/technology-320.html">新技术推广</a>
+                        </li>
+                                                <li>
+                            <a href="/technology-350.html">黄金技术大会</a>
+                        </li>
+                                            </ul>
+                </li>
+                <!--<li>
+                                        <a href="/research.html">黄金政研会</a>
+                    <ul class="sub-nav hsms">
+                                                <li>
+                            <a href="/research-321.html">概述</a>
+                        </li>
+                                                <li>
+                            <a href="/research-322.html">政研动态</a>
+                        </li>
+                                            </ul>
+                </li>-->
+            </ul>
+        </div>
+        <div class="m-search-b"></div>
+    </div>
+    <div class="fix-search abs wh1 baf dn">
+        <div class="mauto wh1 dflr">
+            <div class="con wh1 dfcc flex">
+                <div class="hide rel tra"></div>
+                <form class="row lg-12">
+                                        <input class="txt fl" placeholder="请输入搜索内容" type="text" name="tkeywords" id="tkeywords" onkeydown="if(event.keyCode==13){SiteSearch('/search.html', '#tkeywords');return false};">
+                    <input class="btn fr" type="button" onclick="SiteSearch('/search.html', '#tkeywords');">
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- 头部结束 -->
+
+        <!-- banner区域 -->
+        <div class="swiper banner">
+            <div class="swiper-wrapper">
+                                                <div class="swiper-slide">
+                    <img src="/upload/202511/28/202511281048133625.jpg" />
+                </div>
+                            </div>
+        </div>
+        <div class="w_auto">
+            <!-- 新闻轮播 通知公告  行业新闻 -->
+            <div class="index_news flex justify-between" hsm="fadeup">
+                <!-- 新闻轮播 -->
+                <div class="news_banner">
+                    <div class="swiper banner02">
+                        <div class="swiper-wrapper">
+                                                                                    <div class="swiper-slide">
+                                <a href="/news/show-9637.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202611/06/202611061601228731.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇会见香港投资推广署署长刘凯旋一行
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9600.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202611/02/202611021713045315.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇与张晓海举行工作会商
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9599.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202611/02/202611021713272346.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇与陈丹举行工作会商
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9568.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202609/30/202609301544194009.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇会见上海黄金交易所党委书记、理事长郭大勇
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9446.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202607/17/202607171514378826.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            2026中国国际黄金大会在兰州开幕千余代表共赴金城之约
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9216.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202604/21/202604211337180746.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇会见中泰期货党委书记、董事长周顺远一行
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9207.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202604/20/202604201543274133.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇会见副会长,中国十五冶党委书记、 董事长梁磊一行
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9198.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202604/16/202604162035226999.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            周洲会长出席第六届黄金行业科技创新大会
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9178.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202604/10/202604101451493425.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇与紫金矿业集团党委书记、董事长邹来昌举行工作会谈
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                        <div class="swiper-slide">
+                                <a href="/news/show-9171.html" class="rel">
+                                    <div class="pic img-scale ov"><img src="/upload/202604/08/202604081640549741.jpg"></div>
+                                    <div class="abs tit">
+                                        <div class="t1">
+                                            严弟勇会见重庆国际投资咨询集团董事长高勇一行
+                                        </div>
+                                    </div>
+                                </a>
+                            </div>
+                                                    </div>
+                        <div class="swiper-pagination"></div>
+                        <div class="swiper-button-prev"></div>
+                        <div class="swiper-button-next"></div>
+
+                    </div>
+                </div>
+                <!-- 通知公告 行业新闻 -->
+                <div class="index_news_r">
+                    <div class="tab flex rel">
+                        <a href="/news-324.html" class="current">通知公告</a>
+						<div class="gd abs"><a href="/news-324.html">[更多]</a></div>
+                    </div>
+                    <div class="index_news_list">
+                        <ul class="news_list_item1 ">
+                                                                                    <li>
+                                <a href="/news/show-9615.html" class="flex justify-between">
+                                    <div class="t2">
+                                        关于邀请加入中国黄金协会的函
+                                    </div>
+                                    <div class="time">2026-11-03</div>
+                                </a>
+                            </li>
+                                                        <li>
+                                <a href="/news/show-9598.html" class="flex justify-between">
+                                    <div class="t2">
+                                        关于召开2026国际黄金市场大会暨海南自由贸易港黄金产业发展大会的通知（第一轮）
+                                    </div>
+                                    <div class="time">2026-10-30</div>
+                                </a>
+                            </li>
+                                                        <li>
+                                <a href="/news/show-9569.html" class="flex justify-between">
+                                    <div class="t2">
+                                        关于召开2026国际黄金市场大会暨海南自由贸易港黄金产业发展大会的预通知
+                                    </div>
+                                    <div class="time">2026-09-30</div>
+                                </a>
+                            </li>
+                                                    </ul>
+                    </div>
+                    <div class="tab flex rel">
+                        <a href="/news-351.html " class="current">时政要闻</a>
+						<div class="gd abs"><a href="/news-351.html">[更多]</a></div>
+                    </div>
+                    <div class="index_news_list">
+                        <ul class="news_list_item1">
+                                                                                    <li>
+                                <a href="/news/show-9606.html" class="flex justify-between">
+                                    <div class="t2">
+                                        习近平：关于《中共中央关于持之以恒推进全面从严治党若干重大问题的决定》的说明
+                                    </div>
+                                    <div class="time">2026-11-02</div>
+                                </a>
+                            </li>
+                                                        <li>
+                                <a href="/news/show-9605.html" class="flex justify-between">
+                                    <div class="t2">
+                                        中共中央关于持之以恒推进全面从严治党若干重大问题的决定
+                                    </div>
+                                    <div class="time">2026-11-02</div>
+                                </a>
+                            </li>
+                                                        <li>
+                                <a href="/news/show-9597.html" class="flex justify-between">
+                                    <div class="t2">
+                                        中国共产党第二十届中央委员会第五次全体会议公报（2026年10月29日中国共产党第二十届中央委员会第五次全体会议通过）
+                                    </div>
+                                    <div class="time">2026-10-30</div>
+                                </a>
+                            </li>
+                                                    </ul>
+                    </div>
+                </div>
+            </div>
+            <!-- 图片 -->
+            <div class="images flex gap_1 wrap" hsm="fadeup">
+                                                <div class="col"><a href="https://www.cngold.org.cn/adnews-353.html" target="_blank" class="img-scale ov"><img src="/upload/202512/03/202512031658106932.png?v=1.0.0"></a></div>
+                                <div class="col"><a href="/adnews-342.html" target="_blank" class="img-scale ov"><img src="/upload/202206/29/202206291822085142.jpg?v=1.0.0"></a></div>
+                                <div class="col"><a href="https://www.cngold.org.cn/adnews-354.html" target="_blank" class="img-scale ov"><img src="/upload/202605/26/202605261440115692.png?v=1.0.0"></a></div>
+                            </div>
+
+            <!-- 协会动态 -->
+            <div class="news_box flex justify-between" hsm="fadeup">
+                <div class="new_box_l flex justify-between  wrap gap_2">
+                    <div class="col">
+                        <div class="col01">
+                            <div class="tab flex rel">
+                                <a href="/news-334.html" class="current">协会动态</a>
+                                <div class="gd abs"><a href="/news-334.html">[更多]</a></div>
+                            </div>
+                            <ul class="list">
+                                                                                                <li><a href="/news/show-9638.html">2026年全国行业职业技能竞赛——第十四届全国黄金行业职业技能竞赛贵金属首饰检验员决赛成功举办</a></li>
+                                                                <li><a href="/news/show-9637.html">严弟勇会见香港投资推广署署长刘凯旋一行</a></li>
+                                                                <li><a href="/news/show-9600.html">严弟勇与张晓海举行工作会商</a></li>
+                                                                <li><a href="/news/show-9599.html">严弟勇与陈丹举行工作会商</a></li>
+                                                            </ul>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="col01">
+                            <div class="tab flex rel">
+                                <a href="/news-327.html" class="current">黄金矿业</a>
+                                <div class="gd abs"><a href="/news-327.html">[更多]</a></div>
+                            </div>
+                            <ul class="list">
+                                                                                                <li><a href="/news/show-9311.html">找矿成果发布② | 金砷钨铬镍钴铜钼银天然气硫化氢氦气页岩气</a></li>
+                                                                <li><a href="/news/show-8695.html">81吨！四川探获特大金矿！</a></li>
+                                                                <li><a href="/news/show-8674.html">中方发布《绿色矿产国际经贸合作倡议》和“落实《二十国集团支持非洲和最不发达国家工业化倡议》中国行动”</a></li>
+                                                                <li><a href="/news/show-8641.html">1444.49吨！我国探明首个千吨级金矿</a></li>
+                                                            </ul>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="col01">
+                            <div class="tab flex rel">
+                                <a href="/news-329.html" class="current">黄金市场</a>
+                                <div class="gd abs"><a href="/news-329.html">[更多]</a></div>
+                            </div>
+                            <ul class="list">
+                                                                                                <li><a href="/news/show-9609.html">贵金属周报674期</a></li>
+                                                                <li><a href="/news/show-9608.html">贵金属周报673期</a></li>
+                                                                <li><a href="/news/show-9538.html">贵金属周报672期</a></li>
+                                                                <li><a href="/news/show-9537.html">贵金属周报671期</a></li>
+                                                            </ul>
+                        </div>
+                    </div>
+                    <div class="col">
+                        <div class="col01">
+                            <div class="tab flex rel">
+                                <a href="/news-328.html" class="current">黄金消费</a>
+                                <div class="gd abs"><a href="/news-328.html">[更多]</a></div>
+                            </div>
+                            <ul class="list">
+                                                                                                <li><a href="/news/show-9584.html">党建共建架桥梁 跨界联学促发展</a></li>
+                                                                <li><a href="/news/show-9573.html">亚一转型“运动”赛道！</a></li>
+                                                                <li><a href="/news/show-9571.html">三店接连开业，中国黄金为何加码高端文化黄金</a></li>
+                                                                <li><a href="/news/show-9562.html">2026香港国际珠宝展：翠绿制造，以东方新金艺，对话全球</a></li>
+                                                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <style>
+                    .new_box_r {
+                        background: none;
+                        border-top: 0;
+                        height: 430px;
+                        overflow: hidden;
+                    }
+
+                        .new_box_r .tab {
+                            line-height: 32px;
+                            height: 42px;
+                        }
+                    .new_box_r .list li {
+                       line-height:37px;
+                    }
+                </style>
+
+                <div class="new_box_r">
+                    <div class="col">
+                        <div class="col01">
+                            <div class="tab flex rel">
+                                <a href="/news-325.html" class="current">行业新闻</a>
+                                <div class="gd abs"><a href="/news-325.html">[更多]</a></div>
+                            </div>
+                            <ul class="list">
+                                                                                                <li><a href="/news/show-9638.html">2026年全国行业职业技能竞赛——第十四届全国黄金行业职业技能竞赛贵金属首饰检验员决赛成功举办</a></li>
+                                                                <li><a href="/news/show-9635.html">中国黄金集团：越是资源约束趋紧，越要靠科技人才打开空间</a></li>
+                                                                <li><a href="/news/show-9634.html">山东黄金集团：向深部进军、向绿色进军、向智能进军</a></li>
+                                                                <li><a href="/news/show-9633.html">紫金矿业：向系统要效益“五环归一”唤醒“鸡肋资源”</a></li>
+                                                                <li><a href="/news/show-9602.html">陈晓红院士：加快AI与资源环境管控深度融合</a></li>
+                                                                <li><a href="/news/show-9601.html">李夕兵院士：以“精准、连续、绿色”采矿叩开智能化大门</a></li>
+                                                                <li><a href="/news/show-9589.html">西藏华泰龙公司向巴青地震灾区捐赠1000万元</a></li>
+                                                                <li><a href="/news/show-9588.html">紫金矿业向巴青灾区捐赠1000万元 矿山救援队连夜奔抵震区</a></li>
+                                                                <li><a href="/news/show-9594.html">中国人民银行定于2026年10月22日发行中国工农红军长征胜利90周年金银纪念币一套</a></li>
+                                                                <li><a href="/news/show-9586.html">刘小明会见中国黄金协会党委书记严弟勇</a></li>
+                                                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            <!-- 图片 -->
+            <div class="images flex gap_1 wrap" hsm="fadeup">
+                                                <div class="col"><a href="http://www.cgiac.org.cn" target="_blank" class="img-scale ov"><img src="/upload/202409/11/202409111050578538.jpg?v=1.0.0"></a></div>
+                                <div class="col"><a href="/adnews-343.html" target="_blank" class="img-scale ov"><img src="/upload/202601/09/202601091529590410.png?v=1.0.0"></a></div>
+                                <div class="col"><a href="/adnews-344.html" target="_blank" class="img-scale ov"><img src="/upload/202409/11/202409111053397288.jpg?v=1.0.0"></a></div>
+                            </div>
+            <!-- 黄金矿业 -->
+            <div class="flex   gap_3" hsm="fadeup">
+                <div class="col">
+                    <div class="col01">
+                        <div class="tab flex rel">
+                            <a href="/news-333.html" class="current">黄金统计</a>
+							<div class="gd abs"><a href="/news-333.html">[更多]</a></div>
+                        </div>
+                        <ul class="list">
+                                                                                    <li><a href="/news/show-9624.html">2026年前三季度我国黄金产量220.935吨，同比下降18.71%，黄金消费量684.623吨，同比增长0.28%</a></li>
+                                                        <li><a href="/news/show-9500.html">2026年上半年我国黄金产量152.908吨，同比下降14.62%，黄金消费量511.412吨，同比增长1.23%</a></li>
+                                                        <li><a href="/news/show-9282.html">2026年一季度我国黄金产量81.065吨，同比下降7.08%， 黄金消费量303.292吨，同比增长4.41%</a></li>
+                                                        <li><a href="/news/show-8882.html">2025年12月，我国增持黄金0.93吨</a></li>
+                                                        <li><a href="/news/show-8617.html">2025年前三季度我国黄金产量271.782吨，同比上升1.39%，黄金消费量682.730吨，同比下降7.95%</a></li>
+                                                        <li><a href="/news/show-8504.html">2025年9月，我国增持黄金1.24吨</a></li>
+                                                    </ul>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="col01">
+                        <div class="tab flex rel">
+                            <a href="/news-326.html" class="current">党建工作</a>
+							<div class="gd abs"><a href="/news-326.html">[更多]</a></div>
+                        </div>
+                        <ul class="list">
+                                                                                    <li><a href="/news/show-9636.html">中国黄金协会召开各界代表学习贯彻党的二十届五中全会精神交流会</a></li>
+                                                        <li><a href="/news/show-9614.html">严弟勇讲授学习贯彻党的二十届五中全会精神专题党课</a></li>
+                                                        <li><a href="/news/show-9613.html">中国黄金协会党委召开扩大会议传达学习党的二十届五中全会精神</a></li>
+                                                        <li><a href="/news/show-9595.html">中国黄金协会党委召开扩大会议传达学习习近平总书记在纪念中国工农红军长征胜利90周年大会上的重要讲话精神</a></li>
+                                                        <li><a href="/news/show-9577.html">中国黄金协会党委召开扩大会议 传达学习习近平总书记重要指示精神和 《中共中央 国务院关于发展新质生产力 的意见》</a></li>
+                                                        <li><a href="/news/show-9532.html">中央社会工作部召开2026年巡视全国性行业协会商会党组织动员部署会</a></li>
+                                                    </ul>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="col01">
+                        <div class="tab flex rel">
+                            <a href="/training.html" class="current">行业培训</a>
+							<div class="gd abs"><a href="/training.html">[更多]</a></div>
+                        </div>
+                        <ul class="list">
+                                                                                    <li><a href="/training/show-9315.html">2026年第一期高级黄金投资分析师（唐山五洲金行）培训班成功举办</a></li>
+                                                        <li><a href="/training/show-4836.html">矿业权出让收益相关政策培训班成功举办</a></li>
+                                                        <li><a href="/training/show-4529.html">2024年矿业权评估师职业资格考试通告</a></li>
+                                                        <li><a href="/training/show-4524.html">关于举办2024年矿业权评估师培训班的通知</a></li>
+                                                        <li><a href="/training/show-4726.html">关于开展2024年黄金投资分析师职业培训招生工作的通知</a></li>
+                                                        <li><a href="/training/show-4377.html">人力资源社会保障部办公厅关于2024年度专业技术人员职业资格考试工作计划及有关事项的通知</a></li>
+                                                    </ul>
+                    </div>
+                </div>
+            </div>
+            <!-- 工作交流 -->
+            <div class="flex justify-between   gap_4" hsm="fadeup">
+                <div class="col">
+                    <div class="col01">
+                        <div class="tab flex rel">
+                            <a href="/news-332.html" class="current">工作交流</a>
+							<div class="gd abs"><a href="/news-332.html">[更多]</a></div>
+                        </div>
+                        <ul class="list">
+                                                                                    <li><a href="/news/show-9626.html">全国黄金行业工作交流（2026年第10期）</a></li>
+                                                        <li><a href="/news/show-9566.html">全国黄金行业工作交流（2026年第9期）</a></li>
+                                                        <li><a href="/news/show-9519.html">全国黄金行业工作交流（2026年第8期）</a></li>
+                                                        <li><a href="/news/show-9483.html">全国黄金行业工作交流（2026年第7期）</a></li>
+                                                        <li><a href="/news/show-9402.html">全国黄金行业工作交流（2026年第6期）</a></li>
+                                                        <li><a href="/news/show-9310.html">全国黄金行业工作交流（2026年第5期）</a></li>
+                                                    </ul>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="col01">
+                        <div class="tab flex rel">
+                            <a href="/news-330.html" class="current">反诈反洗钱</a>
+							<div class="gd abs"><a href="/news-330.html">[更多]</a></div>
+                        </div>
+                        <div class="img img-scale ov"><img src="/public/images/ndbg.jpg?v=1.0.1"></div>
+                        <ul class="list list01">
+                                                                                    <li><a href="/news/show-9264.html">评估报告：中国面临的洗钱和恐怖融资风险评估报告摘要（2025）</a></li>
+                                                        <li><a href="/news/show-9263.html">评估报告：中国贵金属和宝石行业洗钱、恐怖融资和扩散融资风险评估报告(摘耍)(2025 )</a></li>
+                                                        <li><a href="/news/show-9262.html">金融制裁：反洗钱特别预防措施及金融制裁名单查询</a></li>
+                                                    </ul>
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="col01">
+                        <div class="xzmu_banner">
+                            <div class="tit">黄金书屋</div>
+                            <!-- 3d轮播旋转 -->
+                            <div class="swiper bannar05">
+                                <div class="swiper-wrapper">
+                                                                                                            <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-9611.html"><img src="" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-4732.html"><img src="/upload/202409/12/202409121042142865.jpg" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-4731.html"><img src="/upload/202409/12/202409121041370052.jpg" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-4730.html"><img src="/upload/202409/12/202409121040537552.jpg" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-4729.html"><img src="/upload/202409/12/202409121039513802.jpg" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-4728.html"><img src="/upload/202409/12/202409121039080365.jpg" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-4727.html"><img src="/upload/202409/12/202409121025573959.jpg" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-4031.html"><img src="" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-3724.html"><img src="/upload/202211/23/202211231432393275.png" /></a></div>
+                                    </div>
+                                                                        <div class="swiper-slide">
+                                        <div class="imgs"><a href="/news/show-3723.html"><img src="/upload/202211/23/202211231432204367.png" /></a></div>
+                                    </div>
+                                                                    </div>
+                                <!-- <div class="swiper-pagination"></div> -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 友情链接 -->
+    <div class="link_bg" hsm="fadeup">
+        <div class="w_1200 flex align-center wrap gap_5">
+            <div class="link_tit">友情链接</div>
+                                    <div class="op">
+                <select name="link336">
+                    <option value="">相关部委</option>
+                                                            <option value="https://www.zyshgzb.gov.cn/">中共中央社会工作部</option>
+                                        <option value="https://www.fmprc.gov.cn/">外交部</option>
+                                        <option value="https://www.ndrc.gov.cn/?code=&state=123">国家发展和改革委员会</option>
+                                        <option value="http://www.moe.gov.cn/">教育部</option>
+                                        <option value="https://www.most.gov.cn/index.html">科学技术部</option>
+                                        <option value="https://www.miit.gov.cn/">工业和信息化部</option>
+                                        <option value="https://www.mca.gov.cn/">民政部</option>
+                                        <option value="http://www.mof.gov.cn/index.htm">财政部</option>
+                                        <option value="http://www.mohrss.gov.cn/">人力资源和社会保障部</option>
+                                        <option value="https://www.mnr.gov.cn/">自然资源部</option>
+                                        <option value="https://www.mee.gov.cn/">生态环境部</option>
+                                        <option value="http://www.mofcom.gov.cn/">商务部</option>
+                                        <option value="http://www.pbc.gov.cn/">中国人民银行</option>
+                                    </select>
+            </div>
+                        <div class="op">
+                <select name="link337">
+                    <option value="">重点企业</option>
+                                                            <option value="http://www.chinagoldgroup.com/">中国黄金集团</option>
+                                        <option value="https://www.sd-gold.com/">山东黄金集团</option>
+                                        <option value="https://www.zjky.cn/">紫金矿业</option>
+                                        <option value="https://www.gold-zhaoyuan.com/">山东招金集团</option>
+                                        <option value="https://www.sge.com.cn/">上海黄金交易所</option>
+                                        <option value="https://www.shfe.com.cn/">上海期货交易所</option>
+                                        <option value="https://www.35.cn">三五互联</option>
+                                    </select>
+            </div>
+                    </div>
+    </div>
+    <!-- 底部 -->
+    <div class="footer " hsm="fadeup">
+    <div class="w_1200 flex justify-between">
+        <div class="footer_l">
+            <div class="address flex wrap justify-between">
+                <div class="t1 bg01">办公地址：北京市东城区柳荫公园南街1号</div>
+                <div class="t1 bg02">010-51323118</div>
+                <div class="t1 bg03">010-51323117</div>
+                <div class="t1 bg04">100011</div>
+            </div>
+            <div class="bq">
+                &copy CopyRight 2021 www.cngold.org.cn All Rights Reserved 中国黄金协会版权所有<br> <a href="https://beian.miit.gov.cn/" target="_blank">京ICP备05019022号</a>
+                技术支持： 35互联
+            </div>
+        </div>
+        <div class="ewm flex justify-between">
+            <div class="ewm01">
+                <div class="ewm_img"><img src="/upload/202208/05/202208051424033174.jpg"></div>
+                <p>中国黄金协会微信公众号</p>
+            </div>
+            <div class="ewm01">
+                <div class="ewm_img"><img src="/upload/202208/05/202208051424096143.jpg"></div>
+                <p>黄金投资分析师微信公众号</p>
+            </div>
+        </div>
+    </div>
+</div>
+    <script type="text/javascript">
+        jQuery(function () {
+            jQuery(".header_nav li").eq(0).addClass("current");
+            $(".link_bg select").change(function () {
+                var thisObj = $(this).val();
+                if (jQuery.trim(thisObj) != "") {
+                    window.open(thisObj);
+                }
+            })
+        });
+    </script>
+</body>
+
+</html>

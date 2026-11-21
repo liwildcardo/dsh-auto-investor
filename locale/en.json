@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Auto investor",
+    "description": "Simulated gold investing under CMB Gold Account rules, with an LLM strategy and self-correction loop. Fetches live gold prices and finance news, stores them in a database, trades within per-trade and total limits, and refines its strategy after losses until it finds a stable-return version for user reference."
+  }
+}
