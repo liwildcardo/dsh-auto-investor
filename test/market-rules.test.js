@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadProducts } from '../core/registry.js';
 import {
-  isSessionOpen, roundLot, tradeFees, earliestSellTs, priceLimitBand, withinPriceBand, zonedParts,
+  isSessionOpen, sessionDateOf, roundLot, tradeFees, earliestSellTs, priceLimitBand, withinPriceBand, zonedParts,
 } from '../core/market-rules.js';
 
 const P = Object.fromEntries(loadProducts().map(p => [p.id, p]));
@@ -37,6 +37,21 @@ test('手数：A股100股整数倍、美股整股、黄金可小数克', () => {
   assert.equal(roundLot(P.ashare.rules, 1234), 1200);
   assert.equal(roundLot(P.us.rules, 12.9), 12);
   assert.equal(roundLot(P.gold.rules, 3.45678), 3.456);
+});
+
+test('跨零点时段：周五夜盘延续到周六 02:00，周日 23:00 不开', () => {
+  const gold = P.gold;
+  // Friday 2026-11-20 23:30 / Saturday 00:30 / Saturday 01:30 / Saturday 03:00 (Shanghai)
+  assert.equal(isSessionOpen(gold.rules, TS(2026, 11, 20, 15, 30), gold.timezone), true);
+  assert.equal(isSessionOpen(gold.rules, TS(2026, 11, 20, 16, 30), gold.timezone), true, '周五夜盘跨到周六');
+  assert.equal(isSessionOpen(gold.rules, TS(2026, 11, 20, 17, 30), gold.timezone), true);
+  assert.equal(isSessionOpen(gold.rules, TS(2026, 11, 20, 19, 0), gold.timezone), false, '周六 03:00 已收盘');
+  // Sunday 23:00 belongs to a weekend, not to Monday's session.
+  assert.equal(isSessionOpen(gold.rules, TS(2026, 11, 8, 15, 0), gold.timezone), false);
+  // Session date keeps the post-midnight hours on the origin day.
+  assert.equal(sessionDateOf(gold.rules, TS(2026, 11, 20, 15, 30), gold.timezone), '2026-11-20');
+  assert.equal(sessionDateOf(gold.rules, TS(2026, 11, 20, 16, 30), gold.timezone), '2026-11-20', '周六 00:30 仍属周五');
+  assert.equal(sessionDateOf(P.ashare.rules, TS(2026, 11, 6, 2, 0), P.ashare.timezone), '2026-11-06');
 });
 
 test('交易时段：A股午休关闭、黄金跨夜开放、美股夏令时正确', () => {

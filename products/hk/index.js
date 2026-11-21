@@ -71,6 +71,7 @@ export default {
       { path: 'risk.stopLossPct', min: -15, max: -2, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 3, max: 40, step: 1 },
       { path: 'signals.valuation.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'candidates.threshold', min: 0.5, max: 1.5, step: 0.05 },
     ],
   },
 
@@ -94,7 +95,7 @@ export default {
   risk: {
     perTrade: 15000,
     perSymbolPct: 25,
-    minVolatility: 0.006, // daily σ floor
+    minVolatility: 0.004, // daily σ floor (observed HK σ ≈ 0.57–0.59%; 0.006 mis-blocked entries)
     trailingStopPct: 3,
     maxHoldHours: 120,
     dailyLossPct: -2.5,

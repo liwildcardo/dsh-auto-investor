@@ -45,24 +45,45 @@ export function zonedEpoch(year, month, day, hour, minute, timeZone) {
   return ts;
 }
 
-/** Session check with wrap-around support (endMin may exceed 1440, e.g. gold 1560). */
+/**
+ * Session check with wrap-around support (endMin may exceed 1440, e.g. gold 1560).
+ * A session that crosses midnight keeps its ORIGIN day's weekday: Friday
+ * 09:10 → Saturday 02:00 is one open session, Sunday 23:00 → Monday 23:00 is not.
+ */
 export function isSessionOpen(rules, ts, timeZone) {
   const z = zonedParts(ts, timeZone);
-  if (isWeekend(z.weekday)) return false;
-  if ((rules.holidays ?? []).includes(z.date)) return false;
-  const minutes = z.minutes;
+  const holidays = rules.holidays ?? [];
+  const closedToday = isWeekend(z.weekday) || holidays.includes(z.date);
   for (const [start, end] of rules.sessions ?? []) {
     if (end <= 1440) {
-      if (minutes >= start && minutes < end) return true;
-    } else if (minutes >= start || minutes < end - 1440) {
-      // Session crosses midnight: the pre-midnight part belongs to the previous
-      // weekday's session, so a weekend only blocks the post-midnight leg.
-      if (minutes >= start) return true;
+      if (!closedToday && z.minutes >= start && z.minutes < end) return true;
+      continue;
+    }
+    // Pre-midnight leg lives on the origin day; the post-midnight leg belongs
+    // to the previous day's session (which must itself be a trading day).
+    if (z.minutes >= start) {
+      if (!closedToday) return true;
+      continue;
+    }
+    if (z.minutes < end - 1440) {
+      if (holidays.includes(z.date)) continue;
       const prev = zonedParts(ts - 86_400_000, timeZone);
-      if (!isWeekend(prev.weekday) && !(rules.holidays ?? []).includes(prev.date)) return true;
+      if (!isWeekend(prev.weekday) && !holidays.includes(prev.date)) return true;
     }
   }
   return false;
+}
+
+/**
+ * Session date for a timestamp: for wrap-around sessions the post-midnight
+ * hours still belong to the previous calendar day (the session's origin).
+ * Used to key day-open baselines and the daily trade counter.
+ */
+export function sessionDateOf(rules, ts, timeZone) {
+  const z = zonedParts(ts, timeZone);
+  const wrapEnd = Math.max(0, ...(rules.sessions ?? []).filter(([, end]) => end > 1440).map(([, end]) => end));
+  if (wrapEnd && z.minutes < wrapEnd - 1440) return zonedParts(ts - 86_400_000, timeZone).date;
+  return z.date;
 }
 
 /** Floor a quantity to the product's lot size (per-symbol override honoured). */

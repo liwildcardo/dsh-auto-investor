@@ -67,16 +67,16 @@ function makeProduct(overrides = {}) {
       sessions: [[570, 690], [780, 900]], holidays: [],
       ...(overrides.rules ?? {}),
     },
-    risk: { perTrade: 10000, perSymbolPct: 25, dailyLossPct: -50, stopLossPct: -5, takeProfitPct: 10, minConfidence: 0.55, minSamplesToEvolve: 0 },
+    risk: { perTrade: 10000, perSymbolPct: 25, dailyLossPct: -50, stopLossPct: -5, takeProfitPct: 10, minConfidence: 0.55, minSamplesToEvolve: 0, ...(overrides.risk ?? {}) },
   });
   return { product, state };
 }
 
-function makeEngine(t, { llm, clock = () => OPEN, settlement, rules } = {}) {
+function makeEngine(t, { llm, clock = () => OPEN, settlement, rules, risk } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'ai-eng-'));
   const db = openDb(join(dir, 'x.db'), { backend: 'json' });
   t.after(() => db.close());
-  const { product, state } = makeProduct({ settlement, rules });
+  const { product, state } = makeProduct({ settlement, rules, risk });
   seedTrend(db, { product: product.id, symbol: 'x' });
   seedTrend(db, { product: product.id, symbol: 'y' });
   const engine = createProductEngine({
@@ -137,11 +137,20 @@ test('low confidence never trades', async (t) => {
   assert.match(res.decision.reason, /置信度/);
 });
 
-test('closed session rejects the fill', async (t) => {
-  const { engine } = makeEngine(t, { llm: async () => JSON.stringify({ action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 }), clock: () => LUNCH });
+test('closed session skips the decision cycle (no LLM call, no fill)', async (t) => {
+  let calls = 0;
+  const { engine } = makeEngine(t, {
+    llm: async () => {
+      calls += 1;
+      return JSON.stringify({ action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 });
+    },
+    clock: () => LUNCH,
+  });
   const res = await engine.runCycle();
   assert.equal(res.trades.length, 0);
-  assert.match(res.rejection ?? '', /交易时段/);
+  assert.equal(res.closedSession, true, 'cycle reports the closed session');
+  assert.equal(calls, 0, 'no LLM call while the market is closed');
+  assert.equal((engine.status().health.cycles ?? 0), 0, 'closed cycles are not journaled');
 });
 
 test('reflection applies only whitelisted, clamped parameters and forks a version', async (t) => {
@@ -414,3 +423,65 @@ test('stop loss forces a sell on the next cycle (T+0 product)', async (t) => {
   assert.equal(res.trades[0].side, 'sell');
   assert.match(res.decision.reason, /风控/);
 });
+
+test('hardStopLossPct floors an evolved stop (no version can loosen past it)', async (t) => {
+  let action = { action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 };
+  const { engine, state } = makeEngine(t, {
+    llm: async () => JSON.stringify(action),
+    settlement: 'T+0',
+    risk: { stopLossPct: -12, hardStopLossPct: -5 }, // version's own stop is looser
+  });
+  await engine.runCycle();
+  state.price = 9.4; // -6%: only the -5 hard floor catches this
+  action = { action: 'hold', confidence: 0.6 };
+  const res = await engine.runCycle();
+  assert.equal(res.trades.length, 1, JSON.stringify(res));
+  assert.match(res.decision.reason, /stop-loss/);
+});
+
+test('take-profit sells the configured fraction once per position', async (t) => {
+  let action = { action: 'buy', symbol: 'x', qty: 1000, confidence: 0.9 };
+  const { engine, state } = makeEngine(t, {
+    llm: async () => JSON.stringify(action),
+    settlement: 'T+0',
+    risk: { takeProfitPct: 10, takeProfitFraction: 0.5, perTrade: 20000 },
+    rules: { priceLimit: null, boardLimitPct: null }, // allow the +12% quote
+  });
+  await engine.runCycle();
+  state.price = 11.2; // +12% (fees are folded into cost) → take-profit
+  action = { action: 'hold', confidence: 0.6 };
+  const first = await engine.runCycle();
+  assert.equal(first.trades.length, 1, JSON.stringify(first));
+  assert.equal(first.trades[0].qty, 500, 'half the position is trimmed');
+  assert.equal(engine.snapshot().positions[0].qty, 500);
+  const second = await engine.runCycle(); // still +10%: no second trim
+  assert.equal(second.trades.length, 0, 'trim happens once per position');
+});
+
+test('plan.maxPositionPct caps total exposure across symbols', async (t) => {
+  let clock = OPEN;
+  let action = { action: 'buy', symbol: 'x', qty: 2500, confidence: 0.9 }; // 25k = 25%
+  const { engine } = makeEngine(t, {
+    llm: async () => JSON.stringify(action),
+    clock: () => clock,
+    rules: { sessions: [[570, 1560]] }, // full day so the 2h gap is in-session
+    risk: { perTrade: 50000, perSymbolPct: 100 },
+  });
+  const r1 = await engine.runCycle();
+  assert.equal(r1.trades.length, 1, JSON.stringify(r1)); // 25k < plan 40k
+  clock += 2 * 3600_000 + 60_000;
+  action = { action: 'buy', symbol: 'y', qty: 2500, confidence: 0.9 };
+  const r2 = await engine.runCycle();
+  assert.equal(r2.trades.length, 0, 'plan cap blocks the second 25k');
+  assert.match(r2.rejection ?? '', /总敞口上限/);
+});
+
+test('LLM output with trailing prose still parses (balanced JSON scan)', async (t) => {
+  const { engine } = makeEngine(t, {
+    llm: async () => '好的，决策如下：\n```json\n{"action":"buy","symbol":"x","amount":1000,"confidence":0.9,"reason":"趋势"}\n```\n以上。',
+  });
+  const res = await engine.runCycle();
+  assert.equal(res.llmError, null);
+  assert.equal(res.trades.length, 1, JSON.stringify(res));
+});
+
