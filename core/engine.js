@@ -715,11 +715,21 @@ export function createProductEngine({
       const price = priceOf(symbol);
       if (!Number.isFinite(price) || !(p.costAvg > 0)) continue;
       const pct = ((price - p.costAvg) / p.costAvg) * 100;
-      if (Number.isFinite(stop) && pct <= stop) return { kind: 'stop-loss', symbol, pct };
+      // Exits are judged on what the account would actually receive: the bid
+      // (gold) / last price minus exit fees. A pure -6% PRICE stop on a fee-heavy
+      // market otherwise realizes ~-7% (observed: HK filled -7.48% on a -6% stop,
+      // fees ≈ 1%). Trailing/time stops stay price-based by design.
+      const exitPrice = fillPrice('sell', symbol);
+      const exitValue = Number.isFinite(exitPrice) ? exitPrice * p.qty : null;
+      const exitFee = Number.isFinite(exitValue) ? tradeFees(cfg.rules, 'sell', exitValue).total : 0;
+      const netPct = Number.isFinite(exitValue) && p.qty > 0
+        ? ((exitValue - exitFee) / (p.qty * p.costAvg) - 1) * 100
+        : pct;
+      if (Number.isFinite(stop) && netPct <= stop) return { kind: 'stop-loss', symbol, pct: netPct };
       // Take-profit trims once per position (tpTaken) when a fraction is set;
       // otherwise it liquidates the whole position.
-      if (Number.isFinite(take) && pct >= take && !p.tpTaken) {
-        return { kind: 'take-profit', symbol, pct, fraction: Number(risk.takeProfitFraction) };
+      if (Number.isFinite(take) && netPct >= take && !p.tpTaken) {
+        return { kind: 'take-profit', symbol, pct: netPct, fraction: Number(risk.takeProfitFraction) };
       }
       // Trailing stop: once in profit, lock gains by exiting when price falls
       // trailingStopPct from the highest price seen since entry.

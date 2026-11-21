@@ -424,6 +424,23 @@ test('stop loss forces a sell on the next cycle (T+0 product)', async (t) => {
   assert.match(res.decision.reason, /风控/);
 });
 
+test('stop-loss triggers on net proceeds (exit fees included)', async (t) => {
+  let action = { action: 'buy', symbol: 'x', qty: 1000, confidence: 0.9 };
+  const { engine, state } = makeEngine(t, {
+    llm: async () => JSON.stringify(action),
+    settlement: 'T+0',
+    risk: { stopLossPct: -6, perTrade: 20000 },
+    // 1% sell-side stamp duty: -5.4% on price is already -6.35% net.
+    rules: { fees: { stampDutyRate: 0.01 } },
+  });
+  await engine.runCycle();
+  state.price = 9.46;
+  action = { action: 'hold', confidence: 0.6 };
+  const res = await engine.runCycle();
+  assert.equal(res.trades.length, 1, JSON.stringify(res));
+  assert.match(res.decision.reason, /stop-loss/);
+});
+
 test('hardStopLossPct floors an evolved stop (no version can loosen past it)', async (t) => {
   let action = { action: 'buy', symbol: 'x', amount: 1000, confidence: 0.9 };
   const { engine, state } = makeEngine(t, {
