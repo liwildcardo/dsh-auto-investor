@@ -233,3 +233,35 @@ test('status exposes health; client renders the health line', async (t) => {
   assert.ok(s.health, 'health present in status');
   assert.equal(s.health.candidateRate, 0);
 });
+
+test('health reflection is skipped when every shrinkable lookback is at its floor', async (t) => {
+  const deadJournal = Array.from({ length: 25 }, () => entry({
+    rejection: '标的不在候选或持仓中',
+    signals: [sig('trend', '数据不足')],
+  }));
+  let calls = 0;
+  const { engine } = harness(t, {
+    journal: deadJournal,
+    // slow is already 20 and its floor is 20 → no legal shrink fix remains
+    evolvable: [{ path: 'signals.trend.params.slow', min: 20, max: 60, step: 1 }],
+    llm: async () => { calls += 1; return '{}'; },
+  });
+  const r = await engine.reflectIfDue();
+  assert.equal(r.reflected, false, 'no wasteful health call at the floor');
+  assert.equal(calls, 0, 'LLM was not called');
+});
+
+test('health prompt lists the exact shrink paths and the candidate threshold', async (t) => {
+  const deadJournal = Array.from({ length: 25 }, () => entry({
+    rejection: '标的不在候选或持仓中',
+    signals: [sig('trend', '数据不足')],
+  }));
+  let prompt = '';
+  const { engine } = harness(t, {
+    journal: deadJournal,
+    llm: async (p) => { prompt = p; return JSON.stringify({ critique: '结构问题', params: {} }); },
+  });
+  await engine.reflectIfDue();
+  assert.match(prompt, /signals\.trend\.params\.slow/, 'whitelisted path spelled out');
+  assert.match(prompt, /candidates\.threshold（当前 0\.8/, 'candidate gate explained');
+});

@@ -5,7 +5,7 @@
  */
 import { createAccount, applyBuy, applySell, snapshotOf, positionOf } from './account.js';
 import { evaluateSignals, compositeScore, pickCandidates, volatility } from './signals.js';
-import { isSessionOpen, roundLot, tradeFees, earliestSellTs, withinPriceBand } from './market-rules.js';
+import { isSessionOpen, sessionDateOf, roundLot, tradeFees, earliestSellTs, withinPriceBand, zonedEpoch } from './market-rules.js';
 import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
 import { fetchDailyHistory, fetchMinuteHistory, fetchFxRate, fetchEmDaily } from './quotes.js';
@@ -89,6 +89,15 @@ export function createProductEngine({
         v.strategy.plan = { ...(cfg.strategy?.plan ?? {}) };
         changed = true;
       }
+      // The candidate gate is part of the strategy (auditable, evolvable);
+      // versions forked before it existed fall back to the product default.
+      if (!Number.isFinite(v.strategy.candidates?.threshold)) {
+        v.strategy.candidates = {
+          ...(v.strategy.candidates ?? {}),
+          threshold: cfg.strategy?.candidates?.threshold ?? 0.8,
+        };
+        changed = true;
+      }
     }
     // Signal lists are frozen at version creation, but signals ADDED to the
     // product contract afterwards (e.g. batch-E factors) must join the ACTIVE
@@ -145,6 +154,7 @@ export function createProductEngine({
         signals: (p.strategy?.signals ?? []).map(s => ({ ...s, params: { ...(s.params ?? {}) } })),
         risk: { ...(p.risk ?? {}) },
         plan: { ...(p.strategy?.plan ?? {}) },
+        candidates: { ...(p.strategy?.candidates ?? {}) },
       },
       critique: null,
       startPnl: 0,
@@ -283,16 +293,16 @@ export function createProductEngine({
     } catch { /* pruning is best-effort */ }
   }
 
-  function sessionDate() {
-    return zonedParts(now(), product.timezone).date;
+  /** Session date (wrap-around aware): post-midnight hours belong to the prior session day. */
+  function sessionDate(ts = now()) {
+    return sessionDateOf(cfg.rules, ts, product.timezone);
   }
 
-  /** Epoch of today's (session-date) session start: local midnight + sessions[0].start. */
+  /** Epoch of the session day's start: sessions[0].start on the session date. */
   function sessionStartMs() {
-    const z = zonedParts(now(), cfg.timezone);
-    const elapsed = (z.hour * 3600 + z.minute * 60 + z.second) * 1000 + (now() % 1000);
-    const midnight = now() - elapsed;
-    return midnight + (cfg.rules?.sessions?.[0]?.[0] ?? 0) * 60_000;
+    const [y, m, d] = sessionDate().split('-').map(Number);
+    const startMin = cfg.rules?.sessions?.[0]?.[0] ?? 0;
+    return zonedEpoch(y, m, d, Math.floor(startMin / 60), startMin % 60, cfg.timezone);
   }
 
   /**
@@ -428,12 +438,20 @@ export function createProductEngine({
    *  valuation 信号自动回退纯 PE。 */
   const pbPercentileOf = (symbol) => percentileOf((sym) => quote?.[sym]?.pb, symbol);
 
+  /** Candidate threshold: version-evolved > product default > 0.8. */
+  function candidateThreshold() {
+    const v = Number(current().strategy?.candidates?.threshold);
+    if (Number.isFinite(v)) return v;
+    const p = Number(cfg.strategy?.candidates?.threshold);
+    return Number.isFinite(p) ? p : 0.8;
+  }
+
   function candidates(news) {
     const list = product.market.kind === 'single'
       ? [pool()[0]?.symbol ?? product.id]
       : pool().map(w => w.symbol);
     const scored = list.map(s => evaluateSymbol(s, news));
-    return { scored, picked: pickCandidates(scored, { threshold: cfg.strategy.candidates?.threshold ?? 0.8, topN: 5 }) };
+    return { scored, picked: pickCandidates(scored, { threshold: candidateThreshold(), topN: 5 }) };
   }
 
   /* ------------------------------- decisions ------------------------------- */
@@ -500,6 +518,15 @@ export function createProductEngine({
         ? ['', '## 个股基本面（PE/PB 与池内分位，分位低=相对便宜）',
           ...ctx.peTable.map(x => `- ${x.name}(${x.symbol}) PE ${x.pe}${x.pb != null ? ` / PB ${x.pb}` : ''}（池内分位 ${x.percentile ?? '—'}）`)]
         : []),
+      ...(product.market.kind === 'multi'
+        ? ['', '## 每手金额（买入至少一手；超过单笔上限的标的买不了，不要选）',
+          ...pool().map((w) => {
+            const px = quote?.[w.symbol]?.price;
+            if (!Number.isFinite(px)) return null;
+            const lot = cfg.rules?.lotSizeFor?.(w.symbol) ?? cfg.rules?.lotSize ?? 1;
+            return `- ${w.name}(${w.symbol}) 每手 ${lot} 股 ≈ ${Math.round(lot * px)} ${cfg.currency}`;
+          }).filter(Boolean)]
+        : []),
       '',
       '## 信号与候选',
       JSON.stringify(ctx.signals, null, 2),
@@ -517,30 +544,60 @@ export function createProductEngine({
       '',
       '只输出 JSON：{"action":"buy|sell|hold","symbol":"...","amount":金额或null,"qty":数量或null,"reason":"...","confidence":0~1,"plan":{...}}',
       '约束：买入的 symbol 必须是下方「候选」中列出的标的，或已有持仓的标的；候选为空时只能 hold。',
+      `约束：候选门槛 = 综合分 ≥ ${candidateThreshold()}，低于门槛的标的即使判断便宜也不能买。`,
     ];
     return lines.join('\n');
   }
 
-  function parseReflection(raw) {
-    try {
-      const m = String(raw ?? '').match(/\{[\s\S]*\}/);
-      if (!m) return null;
-      const j = JSON.parse(m[0]);
-      return {
-        critique: String(j.critique ?? ''),
-        params: j.params != null && typeof j.params === 'object' ? j.params : {},
-      };
-    } catch {
-      return null;
+  /**
+   * First parseable JSON object in a model response. A greedy /\{[\s\S]*\}/
+   * match breaks on trailing prose or two objects (the observed 4% "无法解析"
+   * rate); balanced scanning tolerates both.
+   */
+  function firstJsonObject(text) {
+    const s = String(text ?? '');
+    for (let i = 0; i < s.length; i += 1) {
+      if (s[i] !== '{') continue;
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      for (let j = i; j < s.length; j += 1) {
+        const ch = s[j];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === '\\') esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === '{') depth += 1;
+        else if (ch === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              const v = JSON.parse(s.slice(i, j + 1));
+              if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+            } catch { /* keep scanning */ }
+            break;
+          }
+        }
+      }
     }
+    return null;
+  }
+
+  function parseReflection(raw) {
+    const j = firstJsonObject(raw);
+    if (!j) return null;
+    return {
+      critique: String(j.critique ?? ''),
+      params: j.params != null && typeof j.params === 'object' ? j.params : {},
+    };
   }
 
   function parseDecision(raw) {
     try {
-      const txt = String(raw ?? '');
-      const m = txt.match(/\{[\s\S]*\}/);
-      if (!m) return null;
-      const j = JSON.parse(m[0]);
+      const j = firstJsonObject(raw);
       if (!j || typeof j !== 'object') return null;
       const action = ['buy', 'sell', 'hold'].includes(j.action) ? j.action : 'hold';
       const symbol = j.symbol == null || j.symbol === '' ? null : String(j.symbol);
@@ -563,7 +620,7 @@ export function createProductEngine({
 
   function tradesToday() {
     const today = sessionDate();
-    return db.listTradesByProduct(product.id, 200).filter(t => zonedParts(t.ts, product.timezone).date === today);
+    return db.listTradesByProduct(product.id, 200).filter(t => sessionDate(t.ts) === today);
   }
 
   function dayOpenPrices() {
@@ -670,17 +727,23 @@ export function createProductEngine({
       if (!(qty > 0)) return { ok: false, reason: '数量不足一手' };
       const notional = qty * price;
       if (notional > (risk.perTrade ?? Infinity) + 1e-6) return { ok: false, reason: `超过单笔上限 ${risk.perTrade}` };
-      const perSymbolCap = (account.initial * (risk.perSymbolPct ?? 100)) / 100;
+      // The strategy plan's position cap bounds total exposure (and therefore
+      // each symbol too); the product's capital ceiling still applies on top.
+      const planPct = Number.isFinite(plan.maxPositionPct) ? plan.maxPositionPct : 100;
+      const planCap = (account.initial * planPct) / 100;
+      const perSymbolCap = Math.min((account.initial * (risk.perSymbolPct ?? 100)) / 100, planCap);
       if (symbolValue(symbol) + notional > perSymbolCap + 1e-6) {
         return { ok: false, reason: '超过单标的敞口上限' };
       }
-      const totalCap = cfg.capital?.maxExposureRmb ?? account.initial;
+      const totalCap = Math.min(cfg.capital?.maxExposureRmb ?? account.initial, planCap);
       if (exposureOf() + notional > totalCap + 1e-6) {
         return { ok: false, reason: '超过总敞口上限' };
       }
       const fee = tradeFees(cfg.rules, 'buy', notional).total;
       if (notional + fee > account.cash + 1e-9) return { ok: false, reason: '现金不足' };
       applyBuy(account, { symbol, qty, price, fee, ts: now(), earliestSellTs: earliestSellTs(now(), cfg.rules, cfg.timezone) });
+      // A fresh lot re-arms the take-profit trim for this position.
+      account.positions[symbol].tpTaken = false;
       db.insertTrade({ ts: now(), side: 'buy', grams: cfg.rules.unit === 'gram' ? qty : 0, price, rmb: notional, note: decision.reason, product: product.id, symbol, name: poolNames().get(symbol) ?? '' });
       // Buy-and-hold benchmark: seeded at the first fill so the strategy is
       // always judged against simply holding from the same entry.
@@ -711,7 +774,10 @@ export function createProductEngine({
 
   function riskCheck() {
     const risk = effectiveRisk();
-    const stop = risk.stopLossPct;
+    // A configured hard floor can only TIGHTEN a version's stop, never loosen
+    // it: -5 keeps a version that evolved to -12 from risking 12% per trade.
+    const hard = Number.isFinite(risk.hardStopLossPct) ? risk.hardStopLossPct : -Infinity;
+    const stop = Number.isFinite(risk.stopLossPct) ? Math.max(risk.stopLossPct, hard) : risk.stopLossPct;
     const take = risk.takeProfitPct;
     const trail = risk.trailingStopPct;
     const maxHoldMs = Number.isFinite(risk.maxHoldHours) ? risk.maxHoldHours * 3600_000 : null;
@@ -721,7 +787,11 @@ export function createProductEngine({
       if (!Number.isFinite(price) || !(p.costAvg > 0)) continue;
       const pct = ((price - p.costAvg) / p.costAvg) * 100;
       if (Number.isFinite(stop) && pct <= stop) return { kind: 'stop-loss', symbol, pct };
-      if (Number.isFinite(take) && pct >= take) return { kind: 'take-profit', symbol, pct };
+      // Take-profit trims once per position (tpTaken) when a fraction is set;
+      // otherwise it liquidates the whole position.
+      if (Number.isFinite(take) && pct >= take && !p.tpTaken) {
+        return { kind: 'take-profit', symbol, pct, fraction: Number(risk.takeProfitFraction) };
+      }
       // Trailing stop: once in profit, lock gains by exiting when price falls
       // trailingStopPct from the highest price seen since entry.
       if (Number.isFinite(trail) && pct >= 0) {
@@ -763,6 +833,15 @@ export function createProductEngine({
     // deliberate hold (breaker/paused/busy).
     if (!quote) return jsonSafe({ decision: { action: 'hold', reason: 'no quote' }, trades: [], llmError: null, paused, quoteTs });
     if (paused) return jsonSafe({ decision: { action: 'hold', reason: 'paused' }, trades: [], llmError: null, paused: true, quoteTs });
+    // Session gate: an LLM call while the market is closed can only end in a
+    // rejected order (the old "非交易时段" rejections), so skip the whole cycle
+    // — no LLM cost, no journal entry, and health metrics then describe
+    // actionable cycles only. Quotes were already refreshed by tick().
+    if (!isSessionOpen(cfg.rules, now(), product.timezone)) {
+      const decision = { action: 'hold', reason: '休市：跳过本轮决策', confidence: 0 };
+      lastRun = { decision, trades: [], rejection: null, llmError: null, closedSession: true };
+      return jsonSafe({ decision, trades: [], rejection: null, llmError: null, paused, closedSession: true, quoteTs });
+    }
     // Total-drawdown circuit breaker: stop opening new trades once the account
     // is down by the configured percentage from its starting capital.
     const snap0 = snapshotOf(account, priceOf, s => dayOpenPrices()[s] ?? null);
@@ -805,9 +884,20 @@ export function createProductEngine({
     let trades = [];
     let pickedForExec = null;   // candidates the entry must belong to (B3)
     let signalsSnapshot = null; // what the model saw, journaled for review (C3)
+    let tpSymbol = null;        // take-profit trim to mark once the sell fills
 
     if (risk.kind !== 'none') {
-      decision = { action: 'sell', symbol: risk.symbol, reason: `风控触发：${risk.kind} ${risk.pct.toFixed(2)}%`, confidence: 1 };
+      // A configured take-profit fraction trims the position once; anything
+      // else (stop/trailing/time) liquidates.
+      let qty = null;
+      const pos = positionOf(account, risk.symbol);
+      const frac = Number(risk.fraction);
+      if (risk.kind === 'take-profit' && pos && Number.isFinite(frac) && frac > 0 && frac < 1) {
+        const part = roundLot(cfg.rules, pos.qty * frac, risk.symbol);
+        if (part > 0 && part < pos.qty) qty = part;
+      }
+      decision = { action: 'sell', symbol: risk.symbol, qty, reason: `风控触发：${risk.kind} ${risk.pct.toFixed(2)}%`, confidence: 1 };
+      if (risk.kind === 'take-profit' && pos?.tpTaken !== true) tpSymbol = risk.symbol;
     } else {
       const { scored, picked } = candidates(news);
       pickedForExec = picked;
@@ -860,8 +950,13 @@ export function createProductEngine({
 
     if (decision.action !== 'hold') {
       const r = execute(decision, pickedForExec);
-      if (r.ok) trades = [r];
-      else rejection = r.reason;
+      if (r.ok) {
+        trades = [r];
+        if (tpSymbol) {
+          const p = positionOf(account, tpSymbol);
+          if (p) p.tpTaken = true;
+        }
+      } else rejection = r.reason;
     }
     if (lastIngest) lastIngest = { ...lastIngest };
     lastRun = { decision, trades, rejection, llmError };
@@ -1037,6 +1132,20 @@ export function createProductEngine({
 
   /** Only signal lookback params, shrink-only, qualify for the bootstrap fix. */
   const SHRINK_PATH = /^signals\.[^.]+\.params\.(fast|slow|period)$/;
+
+  /**
+   * Lookback params that can still be shortened. When every one of them sits
+   * at its floor there is no legal shrink fix left, so the health trigger must
+   * not spend an LLM call re-proposing values that will be rejected (the old
+   * loop did exactly that every 6h). Periodic reflection still reviews daily.
+   */
+  function shrinkableLookbacks() {
+    return (cfg.strategy.evolvable ?? []).filter((w) => {
+      if (!SHRINK_PATH.test(w.path)) return false;
+      const cur = Number(getPath(current().strategy, w.path));
+      return Number.isFinite(cur) && (!Number.isFinite(w.min) || cur > w.min);
+    });
+  }
   /**
    * Apply shrink-only lookback fixes for a health reflection: bounds + step
    * alignment are enforced, but the performance jump-guard is not — direction
@@ -1089,6 +1198,14 @@ export function createProductEngine({
       '',
       '## 规则',
       '- 只能输出「信号回看参数」的调整（fast/slow/period），且只能调小——缩短回看以适配现有数据量；调大或改其它参数一律无效',
+      '- 路径必须逐字照抄下表（`signals.<信号id>.params.<参数>`），不要另写格式，否则会被丢弃',
+      '## 可缩短的回看参数',
+      ...shrinkableLookbacks().map(w => `- ${w.path}：当前 ${getPath(current().strategy, w.path)}，下界 ${w.min}，步长 ${w.step ?? 1}`),
+      '',
+      '## 说明',
+      `- 候选 = 综合分 ≥ candidates.threshold（当前 ${candidateThreshold()}，策略版本可演进，但不属于本轮可调参数）；综合分为负时本来就不会有候选，这是设计而非故障。`,
+      '- 成交还会被交易时段、最小交易间隔、波动率、手数、单笔/单标的/总敞口等闸门过滤；这些拒绝不等于候选生成失败。',
+      '- 若上表已无可缩短参数，说明是结构/数据问题，不要给 params，把结论写进 critique。',
       '- 若问题不在参数（如交易时段、候选阈值、数据源缺失），写在 critique 里说明，不要给 params',
       '',
       '只输出 JSON：{"critique":"...","params":{"路径":数值}}',
@@ -1189,7 +1306,9 @@ export function createProductEngine({
       JSON.stringify(lastEntry, null, 2),
       '',
       '## 可调整参数（只能改这些路径，且受上下界约束）',
-      ...(cfg.strategy.evolvable ?? []).map(w => `- ${w.path} ∈ [${w.min}, ${w.max}] step ${w.step}`),
+      ...(cfg.strategy.evolvable ?? []).map(w => `- ${w.path} ∈ [${w.min}, ${w.max}] step ${w.step}（当前 ${getPath(current().strategy, w.path)}）`),
+      '',
+      `候选门槛 candidates.threshold = ${candidateThreshold()}：综合分低于它的标的不进入候选。`,
       '',
       '只输出 JSON：{"critique":"...","params":{"路径":数值}}',
     ].join('\n');
@@ -1205,8 +1324,12 @@ export function createProductEngine({
     const intervalMs = (cfg.reflectIntervalHours ?? 24) * 3600_000;
     const periodicDue = now() - lastReflectAt >= intervalMs;
     // Health trigger: alive but producing nothing (independent clock, 6h cool-down).
+    // Only fire when a legal shrink fix still exists — otherwise the call can
+    // only produce rejected params (and burns a call every 6h).
     const healthLast = db.getState(pkey('lastHealthReflectAt')) ?? 0;
-    const healthDue = healthTriggered(health) && now() - healthLast >= 6 * 3600_000;
+    const healthDue = shrinkableLookbacks().length > 0
+      && healthTriggered(health)
+      && now() - healthLast >= 6 * 3600_000;
     if (!force && !lossTriggered && !periodicDue && !healthDue) {
       return jsonSafe({ reflected: false, stats, health });
     }
@@ -1328,7 +1451,7 @@ export function createProductEngine({
     const result = runBacktestCore({
       bars: barsFor(sym),
       signals: activeSignals(),
-      threshold: cfg.strategy.candidates?.threshold ?? 0.8,
+      threshold: candidateThreshold(),
       stopLossPct: risk.stopLossPct ?? -5,
       takeProfitPct: risk.takeProfitPct ?? 10,
     });
