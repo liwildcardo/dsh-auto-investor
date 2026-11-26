@@ -8,7 +8,7 @@ import { evaluateSignals, compositeScore, pickCandidates, volatility } from './s
 import { isSessionOpen, roundLot, tradeFees, earliestSellTs, withinPriceBand } from './market-rules.js';
 import { zonedParts } from './market-rules.js';
 import { jsonSafe } from '../lib/json.js';
-import { fetchDailyHistory, fetchMinuteHistory, fetchFxRate } from './quotes.js';
+import { fetchDailyHistory, fetchMinuteHistory, fetchFxRate, fetchEmDaily } from './quotes.js';
 import { loadWatchlist, addToWatchlist, removeFromWatchlist, resetWatchlist } from './watchlist.js';
 import { runBacktest as runBacktestCore } from './backtest.js';
 import { collectFactors, readFactors } from './factor-sources.js';
@@ -161,9 +161,15 @@ export function createProductEngine({
 
   /* ------------------------------ market data ------------------------------ */
 
-  /** Seed history once per symbol so signal bars work immediately. */
+  /**
+   * Seed history once per symbol so signal bars work immediately.
+   * single 产品（黄金）走 market.dailySeed：日线种子写 **series 表**（带
+   * OHLCV），绝不写 ticks —— barsFor('1h') 只读 ticks，跨零点回绕
+   * （gold 09:10–次日02:00）会让周二至周五的午夜行混入 1h 桶，结构隔离
+   * 才能保住 1h 序列的时间含义；日开盘基准也只读 ticks，不受影响。
+   */
   async function seedHistory() {
-    if (product.market.kind !== 'multi') return;
+    if (product.market.kind === 'single') return seedDailyHistory();
     for (const w of pool().slice(0, 20)) {
       if (barsFor(w.symbol).length >= 30) continue; // enough signal bars already
       const key = pkey(`seeded:${w.symbol}`);
@@ -186,6 +192,36 @@ export function createProductEngine({
         // on every price tick (throttled to once per 30 minutes).
         db.putState(key, now());
       }
+    }
+  }
+
+  /**
+   * Single-product daily seed (gold): fills the series table so '1d' bars
+   * (backtest) carry years of history instead of 240 hourly bars.
+   * Gates: ≥60 '1d' bars → done; otherwise a 30-minute throttle key
+   * (recorded even on failure, so a dead endpoint is not hammered).
+   */
+  async function seedDailyHistory() {
+    const seed = product.market?.dailySeed;
+    if (!seed || seed.kind !== 'em' || !seed.secid) return;
+    const symbol = pool()[0]?.symbol ?? product.id;
+    if (barsFor(symbol, '1d').length >= 60) return;
+    const key = pkey('seeded:daily');
+    const seededAt = db.getState(key) ?? 0;
+    if (now() - seededAt < 30 * 60_000) return;
+    try {
+      const rows = await fetchEmDaily(fetchFn, seed.secid, 400, cfg.timezone);
+      // 瘦源重抓：按 ts 去重，重复行不再插入（否则行数/存储随重抓膨胀）。
+      const existing = new Set(db.listPoints(cfg.id, symbol, 5000).map((p) => p.ts));
+      for (const r of rows) {
+        if (existing.has(r.ts)) continue;
+        db.insertPoint({
+          ts: r.ts, product: cfg.id, symbol,
+          price: r.price, open: r.open, high: r.high, low: r.low, volume: r.volume, pe: null,
+        });
+      }
+    } catch { /* seed failure → next cycle retries (throttle recorded below) */ } finally {
+      db.putState(key, now());
     }
   }
 
@@ -320,8 +356,13 @@ export function createProductEngine({
   function barsFor(symbol, interval = cfg.strategy?.barInterval ?? '1d', count = 240) {
     const intraday = interval === '1h';
     const cutoff = now() - 400 * 86_400_000;
+    // single（黄金）：1h 只读 ticks（种子在 series，结构上进不来）；
+    // 1d 合并 series 种子 + 实时 ticks，按 ts 升序，让同日实时价覆盖种子。
     const rows = product.market.kind === 'single'
-      ? db.latestTicksByProduct(product.id, 5000)
+      ? (intraday
+        ? db.latestTicksByProduct(product.id, 5000)
+        : [...db.listPoints(product.id, symbol, 5000), ...db.latestTicksByProduct(product.id, 5000)]
+          .sort((a, b) => a.ts - b.ts))
       : db.listPoints(product.id, symbol, 5000);
     const buckets = new Map();
     for (const r of rows) {
@@ -354,25 +395,38 @@ export function createProductEngine({
       // Macro factors are product-level; PE percentile is pool cross-sectional.
       realYield: factors?.realYield ?? null,
       usdIndex: factors?.usdIndex ?? null,
+      breakeven: factors?.breakeven ?? null,
+      yieldCurve: factors?.yieldCurve ?? null,
+      goldSilverRatio: factors?.goldSilverRatio ?? null,
       pePercentile: pePercentileOf(symbol),
+      pbPercentile: pbPercentileOf(symbol),
     });
     const score = compositeScore(signals);
     return { symbol, score, signals, price: priceOf(symbol) };
   }
 
-  /** Cross-sectional PE percentile within the pool (1 = cheapest in pool). */
-  function pePercentileOf(symbol) {
+  /** Cross-sectional percentile of `read(symbol)` within the pool
+   *  (1 = cheapest in pool). Shared by PE/PB so the two cannot drift apart. */
+  function percentileOf(read, symbol) {
     if (product.market.kind === 'single') return null;
-    const pes = pool()
-      .map(w => quote?.[w.symbol]?.pe)
+    const vals = pool()
+      .map(w => read(w.symbol))
       .filter(p => Number.isFinite(p) && p > 0)
       .sort((a, b) => a - b);
-    const pe = quote?.[symbol]?.pe;
-    if (!Number.isFinite(pe) || pe <= 0) return null;
-    if (pes.length < 2) return 0.5; // single-name pool → neutral (spec §9)
-    const below = pes.filter(x => x < pe).length;
-    return Math.round((below / (pes.length - 1)) * 100) / 100;
+    const own = read(symbol);
+    if (!Number.isFinite(own) || own <= 0) return null;
+    if (vals.length < 2) return 0.5; // single-name pool → neutral (spec §9)
+    const below = vals.filter(x => x < own).length;
+    return Math.round((below / (vals.length - 1)) * 100) / 100;
   }
+
+  /** Cross-sectional PE percentile within the pool. */
+  const pePercentileOf = (symbol) => percentileOf((sym) => quote?.[sym]?.pe, symbol);
+
+  /** Cross-sectional PB percentile within the pool.
+   *  PB 仅 A 股报价解析（parseTencent 的 sh/sz 门），美/港恒 null →
+   *  valuation 信号自动回退纯 PE。 */
+  const pbPercentileOf = (symbol) => percentileOf((sym) => quote?.[sym]?.pb, symbol);
 
   function candidates(news) {
     const list = product.market.kind === 'single'
@@ -396,6 +450,10 @@ export function createProductEngine({
     };
     const ry = f.realYield;
     const usd = f.usdIndex;
+    const be = f.breakeven;
+    const yc = f.yieldCurve;
+    const gsr = f.goldSilverRatio;
+    const fmtVal = (v, unit) => (Number.isFinite(v) ? `${v.toFixed(2)}${unit}` : '—');
     return [
       ry
         ? `实际收益率 ${Number.isFinite(ry.value) ? `${ry.value}%` : '—'}（5日 ${fmtDelta(ry.delta5d, 'bp')}，数据截至 ${ry.asOf}）${mark(ry)}`
@@ -403,6 +461,15 @@ export function createProductEngine({
       usd
         ? `美元指数 ${Number.isFinite(usd.value) ? usd.value.toFixed(2) : '—'}（5日 ${fmtDelta(usd.delta5d, 'pct')}，数据截至 ${usd.asOf}）${mark(usd)}`
         : '美元指数 数据不可用',
+      be
+        ? `通胀预期 ${fmtVal(be.value, '%')}（5日 ${fmtDelta(be.delta5d, 'bp')}，数据截至 ${be.asOf}）${mark(be)}`
+        : '通胀预期 数据不可用',
+      yc
+        ? `收益率曲线(10Y−2Y) ${fmtVal(yc.value, 'pp')}（5日 ${fmtDelta(yc.delta5d, 'bp')}，数据截至 ${yc.asOf}）${mark(yc)}`
+        : '收益率曲线 数据不可用',
+      gsr
+        ? `金银比 ${Number.isFinite(gsr.value) ? gsr.value.toFixed(1) : '—'}（5日 ${fmtDelta(gsr.delta5d, 'pct')}，数据截至 ${gsr.asOf}）${mark(gsr)}`
+        : '金银比 数据不可用',
     ];
   }
 
@@ -430,8 +497,8 @@ export function createProductEngine({
       '## 宏观因子',
       ...factorLines(ctx),
       ...(ctx.peTable?.length
-        ? ['', '## 个股基本面（PE / 池内分位，分位低=相对便宜）',
-          ...ctx.peTable.map(x => `- ${x.name}(${x.symbol}) PE ${x.pe}（池内分位 ${x.percentile ?? '—'}）`)]
+        ? ['', '## 个股基本面（PE/PB 与池内分位，分位低=相对便宜）',
+          ...ctx.peTable.map(x => `- ${x.name}(${x.symbol}) PE ${x.pe}${x.pb != null ? ` / PB ${x.pb}` : ''}（池内分位 ${x.percentile ?? '—'}）`)]
         : []),
       '',
       '## 信号与候选',
@@ -567,7 +634,11 @@ export function createProductEngine({
     if (!isSessionOpen(cfg.rules, now(), cfg.timezone)) return { ok: false, reason: '非交易时段' };
 
     const prevClose = prevCloseOf(symbol);
-    if (!withinPriceBand(cfg.rules, prevClose, price, symbol)) return { ok: false, reason: '超出涨跌停价格区间' };
+    // 真实涨跌停（A股报价字段）优先于配置带；美/港报价无此字段 → 配置带。
+    const quoteBand = product.market.kind === 'single'
+      ? { up: quote?.limitUp, down: quote?.limitDown }
+      : { up: quote?.[symbol]?.limitUp, down: quote?.[symbol]?.limitDown };
+    if (!withinPriceBand(cfg.rules, prevClose, price, symbol, quoteBand)) return { ok: false, reason: '超出涨跌停价格区间' };
 
     // Frequency discipline applies to ENTRIES only: risk/LLM sells reduce
     // exposure and must never be blocked by churn controls.
@@ -764,6 +835,7 @@ export function createProductEngine({
             symbol: w.symbol,
             name: w.name,
             pe: quote?.[w.symbol]?.pe ?? null,
+            pb: quote?.[w.symbol]?.pb ?? null,
             percentile: pePercentileOf(w.symbol),
           })).filter(x => Number.isFinite(x.pe))
           : [],

@@ -151,17 +151,51 @@ function volumeSignal(ctx, params = {}) {
   return { score: 0, note: `量比 ${r.toFixed(2)}` };
 }
 
-function valuationSignal(ctx, params = {}) {
-  const p = Number(ctx.pePercentile);
-  // noData: without PE the signal abstains (does not dilute the composite).
-  if (!Number.isFinite(p)) return { score: 0, note: '无估值数据', noData: true };
+/** Percentile → score with the valuation thresholds; null = no data. */
+function percentileScore(p, params = {}) {
+  if (!Number.isFinite(p)) return null;
   const low = params.low ?? 0.3;
   const high = params.high ?? 0.8;
-  if (p <= low) return { score: 2, note: `PE 分位 ${(p * 100).toFixed(0)}% 偏低` };
-  if (p < 0.5) return { score: 1, note: `PE 分位 ${(p * 100).toFixed(0)}% 中低` };
-  if (p >= high) return { score: -2, note: `PE 分位 ${(p * 100).toFixed(0)}% 偏高` };
-  if (p > 0.65) return { score: -1, note: `PE 分位 ${(p * 100).toFixed(0)}% 中高` };
-  return { score: 0, note: `PE 分位 ${(p * 100).toFixed(0)}%` };
+  if (p <= low) return 2;
+  if (p < 0.5) return 1;
+  if (p >= high) return -2;
+  if (p > 0.65) return -1;
+  return 0;
+}
+
+/** 档位词（与 percentileScore 同阈值）：note 的方向可读性，分数不受影响。 */
+function tierWord(p, params = {}) {
+  const low = params.low ?? 0.3;
+  const high = params.high ?? 0.8;
+  if (p <= low) return '偏低';
+  if (p < 0.5) return '中低';
+  if (p >= high) return '偏高';
+  if (p > 0.65) return '中高';
+  return '';
+}
+
+/**
+ * PE/PB 复合估值：两个分位各自打分后取平均（任一源缺失不稀释另一源，
+ * 语义与原 noData 弃权一致）。null/undefined/NaN 一律视为缺数据 —— 历史上
+ * `Number(null)===0` 会把"无 PE"当"最便宜"打 +2，此处不再复现。
+ */
+function valuationSignal(ctx, params = {}) {
+  const scores = [];
+  const parts = [];
+  const pick = (v, label) => {
+    if (v == null) return;
+    const p = Number(v);
+    const s = percentileScore(p, params);
+    if (s == null) return;
+    scores.push(s);
+    const tier = tierWord(p, params);
+    parts.push(`${label} 分位 ${Math.round(p * 100)}%${tier ? ` ${tier}` : ''}`);
+  };
+  pick(ctx.pePercentile, 'PE');
+  pick(ctx.pbPercentile, 'PB');
+  if (!scores.length) return { score: 0, note: '无估值数据', noData: true };
+  const avg = Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100;
+  return { score: avg, note: parts.join(' / ') };
 }
 
 /**
@@ -198,6 +232,66 @@ function usdIndexSignal(ctx, params = {}) {
   return { score: 0, note: `美元 5日${pct.toFixed(2)}%（中性）` };
 }
 
+/**
+ * 通胀预期（名义 10Y − TIPS 10Y）5 日变化：预期上行 → 黄金通胀对冲需求
+ * 增强（利好）；预期快速回落 → 利空。delta5d 单位为百分点（pp），
+ * 阈值 ±3bp / ±10bp。params.direction 可整体反号（如股票产品）。
+ */
+function breakevenInflationSignal(ctx, params = {}) {
+  const f = ctx.breakeven;
+  if (!f) return { score: 0, note: '无通胀预期数据', noData: true };
+  if (f.stale) return { score: 0, note: '通胀预期数据过期', noData: true };
+  if (!Number.isFinite(f.delta5d)) return { score: 0, note: '通胀预期历史不足', noData: true };
+  const bp = Math.round(f.delta5d * 100);
+  let raw = 0;
+  if (bp <= -10) raw = -2;
+  else if (bp <= -3) raw = -1;
+  else if (bp >= 10) raw = 2;
+  else if (bp >= 3) raw = 1;
+  const dir = Math.sign(params.direction ?? 1) || 1;
+  const hint = raw > 0 ? '（通胀预期上行，利好黄金）'
+    : raw < 0 ? '（通胀预期回落，利空黄金）' : '';
+  return { score: clampScore(raw * dir), note: `通胀预期 5日${bp >= 0 ? '+' : ''}${bp}bp${hint}` };
+}
+
+/**
+ * 收益率曲线（10Y − 2Y 利差，百分点）：倒挂 = 衰退/避险压力（黄金利好、
+ * 股票利空）；过度陡峭 = 过热。方向由 params.direction 按产品设定
+ * （gold +1、us −1）。slope 非有限 → 弃权。
+ */
+function yieldCurveSignal(ctx, params = {}) {
+  const f = ctx.yieldCurve;
+  if (!f) return { score: 0, note: '无收益率曲线数据', noData: true };
+  if (f.stale) return { score: 0, note: '收益率曲线数据过期', noData: true };
+  const slope = f.value;
+  if (!Number.isFinite(slope)) return { score: 0, note: '收益率曲线数据不足', noData: true };
+  const raw = slope <= 0 ? 2 : slope < 0.5 ? 1 : slope > 2 ? -1 : 0;
+  const dir = Math.sign(params.direction ?? 1) || 1;
+  const label = slope <= 0 ? '（倒挂）' : '';
+  return { score: clampScore(raw * dir), note: `10Y−2Y 利差 ${slope.toFixed(2)}pp${label}` };
+}
+
+/**
+ * 金银比（XAU/XAG）5 日变化：比值上行 = 黄金相对白银走强（避险/趋势
+ * 情绪），对黄金为顺势信号；下行 = 白银领涨（工业/风险偏好修复）。
+ * delta5d 单位为 %；阈值 ±1.5% / ±5%。
+ */
+function goldSilverRatioSignal(ctx, params = {}) {
+  const f = ctx.goldSilverRatio;
+  if (!f) return { score: 0, note: '无金银比数据', noData: true };
+  if (f.stale) return { score: 0, note: '金银比数据过期', noData: true };
+  if (!Number.isFinite(f.delta5d)) return { score: 0, note: '金银比历史不足', noData: true };
+  const p = f.delta5d;
+  let raw = 0;
+  if (p >= 5) raw = 2;
+  else if (p >= 1.5) raw = 1;
+  else if (p <= -5) raw = -2;
+  else if (p <= -1.5) raw = -1;
+  const dir = Math.sign(params.direction ?? 1) || 1;
+  const hint = raw > 0 ? '（黄金相对走强）' : raw < 0 ? '（黄金相对走弱）' : '';
+  return { score: clampScore(raw * dir), note: `金银比 5日${p >= 0 ? '+' : ''}${p.toFixed(2)}%${hint}` };
+}
+
 const POSITIVE = ['上涨', '增持', '突破', '利好', '超预期', '增长', '回购', '分红', '降息', '宽松', '创新高'];
 const NEGATIVE = ['下跌', '减持', '跌破', '利空', '不及预期', '下滑', '处罚', '违约', '加息', '收紧'];
 
@@ -224,6 +318,9 @@ export const SIGNALS = {
   news: newsSentimentSignal,
   realYield: realYieldSignal,
   usdIndex: usdIndexSignal,
+  breakevenInflation: breakevenInflationSignal,
+  yieldCurve: yieldCurveSignal,
+  goldSilverRatio: goldSilverRatioSignal,
 };
 
 /** Evaluate one product's configured signals against a market snapshot. */

@@ -18,3 +18,7 @@ _dbg_*.mjs
 Thumbs.db
 .idea/
 .vscode/
+
+# Isolated worktrees & plan workspaces
+.worktrees/
+.superpowers/

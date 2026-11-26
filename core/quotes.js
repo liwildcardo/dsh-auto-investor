@@ -4,9 +4,25 @@
  */
 import { zonedEpoch } from './market-rules.js';
 
-const FIELD = { price: 3, prevClose: 4, open: 5, volume: 6, pe: 39 };
+const FIELD = {
+  price: 3, prevClose: 4, open: 5, volume: 6, pe: 39,
+  turnover: 38, pb: 46, limitUp: 47, limitDown: 48, volRatio: 49,
+};
 
-/** Parse the `v_sh600000="1~name~code~..."` payload into normalized quotes. */
+/** Positive-finite parse: '' / '--' / 0 / NaN → null (never a fake 0). */
+const pos = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+/**
+ * Parse the `v_sh600000="1~name~code~..."` payload into normalized quotes.
+ * Extended fields (pb/limitUp/limitDown/turnover/volRatio) are parsed for
+ * A-share (sh/sz) payloads ONLY:实测 hk/us 载荷字段位不对齐
+ * （hk46='TENCENT'、us47='Apple Inc.'、us48 为有限数值会伪装成跌停价），
+ * 这些市场一律 null → 估值回退纯 PE、涨跌停回退配置带。索引漂移时
+ * 防御性 pos() 也会得到 null 并降级，不会抛错。
+ */
 export function parseTencent(text) {
   const out = [];
   for (const m of String(text ?? '').matchAll(/v_([a-z]{2}[A-Za-z0-9.]+)="([^"]*)"/g)) {
@@ -14,7 +30,8 @@ export function parseTencent(text) {
     const f = body.split('~');
     const price = Number(f[FIELD.price]);
     if (!Number.isFinite(price) || price <= 0) continue;
-    const pe = Number(f[FIELD.pe]);
+    const pe = pos(f[FIELD.pe]);
+    const cn = symbol.startsWith('sh') || symbol.startsWith('sz');
     out.push({
       symbol,
       price,
@@ -22,7 +39,12 @@ export function parseTencent(text) {
       open: Number(f[FIELD.open]) || null,
       volume: Number(f[FIELD.volume]) || 0,
       // PE(TTM) — same field index on A-share/HK/US payloads (verified).
-      pe: Number.isFinite(pe) && pe > 0 ? pe : null,
+      pe,
+      pb: cn ? pos(f[FIELD.pb]) : null,
+      limitUp: cn ? pos(f[FIELD.limitUp]) : null,
+      limitDown: cn ? pos(f[FIELD.limitDown]) : null,
+      turnover: cn ? pos(f[FIELD.turnover]) : null,
+      volRatio: cn ? pos(f[FIELD.volRatio]) : null,
       currency: symbol.startsWith('us') ? 'USD' : symbol.startsWith('hk') ? 'HKD' : 'CNY',
     });
   }
@@ -111,12 +133,13 @@ export async function fetchFxRate(fetchFn, from = 'USD', timeoutMs = 8000) {
 }
 
 /**
- * Daily close/open/volume history (Tencent kline). Seeds indicators on a fresh
- * install so trend/momentum/RSI can compute before enough live ticks exist.
+ * Daily/weekly/monthly close history (Tencent kline). Seeds indicators on a
+ * fresh install so trend/momentum/RSI can compute before enough live ticks
+ * exist, and feeds long-history backtests ('week'/'month' intervals).
  * Returns [{ts, price, open, high, low, volume}] oldest first.
  */
-export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs = 10000) {
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(symbol)},day,,,${count},qfq`;
+export async function fetchKline(fetchFn, symbol, interval = 'day', count = 120, timeoutMs = 10000) {
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(symbol)},${interval},,,${count},qfq`;
   const res = await fetchFn(url, {
     signal: AbortSignal.timeout(timeoutMs),
     headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://gu.qq.com/' },
@@ -124,7 +147,7 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
   if (!res.ok) throw new Error(`history http ${res.status}`);
   const json = await res.json();
   const node = json?.data?.[symbol] ?? json?.data?.[symbol.toLowerCase()] ?? null;
-  const rows = node?.qfqday ?? node?.day ?? [];
+  const rows = node?.[`qfq${interval}`] ?? node?.[interval] ?? [];
   const out = [];
   const cutoff = Date.now() - 2 * 365 * 86_400_000; // ignore stale/misparsed bars
   for (const r of rows) {
@@ -140,6 +163,46 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
       low: Number(r[4]) || null,
       volume: Number(r[5]) || null,
     });
+  }
+  return out;
+}
+
+/** Back-compat alias: daily bars (the historical seed path). */
+export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs = 10000) {
+  return fetchKline(fetchFn, symbol, 'day', count, timeoutMs);
+}
+
+/**
+ * Eastmoney daily klines (push2his, klt=101) → full bar rows for a secid.
+ * Used as gold's daily-history seed (产品契约 market.dailySeed) so '1d'
+ * backtests have years of data instead of 240 hourly bars.
+ * 3-column legacy payloads (date,open,close) yield null high/low/volume.
+ * ts is built at market-local midnight (Asia/Shanghai for the gold secid).
+ */
+export async function fetchEmDaily(fetchFn, secid, days = 400, timeZone = 'Asia/Shanghai', timeoutMs = 15_000) {
+  const beg = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10).replaceAll('-', '');
+  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=0&beg=${beg}&end=20991231`;
+  const res = await fetchFn(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://quote.eastmoney.com/' },
+  });
+  if (!res.ok) throw new Error(`em kline http ${res.status}`);
+  const json = await res.json();
+  const out = [];
+  const cutoff = Date.now() - 2 * 365 * 86_400_000;
+  for (const line of json?.data?.klines ?? []) {
+    const p = String(line).split(',');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(p[0] ?? '')) continue;
+    const price = Number(p[2]);
+    // 日界按产品时区构建（默认上海；第二个非上海种子落地时零改动）
+    const [y, m, d] = p[0].split('-').map(Number);
+    const ts = zonedEpoch(y, m, d, 0, 0, timeZone);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts) || ts < cutoff) continue;
+    const num = (i) => {
+      const v = Number(p[i]);
+      return Number.isFinite(v) ? v : null;
+    };
+    out.push({ ts, price, open: num(1), high: num(3), low: num(4), volume: num(5) });
   }
   return out;
 }

@@ -11,6 +11,7 @@
 
 const DAY = 86_400_000;
 const MAX_AGE = 26 * 3600_000; // daily series republish within ~26h
+const MAX_AGE_RATIO = 30 * 60_000; // intraday spot ratio: 26h is too blunt
 
 /** Error text incl. the hidden undici cause (ENOTFOUND / ECONNREFUSED / ...). */
 function describeError(e) {
@@ -100,10 +101,114 @@ function withDelta(entry, now, kind) {
 
 /** Read cached factors (no network) — used by status/prompt. */
 export function readFactors(db, now = () => Date.now()) {
+  const realYield = withDelta(db.getState('factor:em:UI10Y'), now, 'pp');
+  const usdIndex = withDelta(db.getState('factor:usdIndex'), now, 'pct');
+  const us10Y = withDelta(db.getState('factor:em:US10Y'), now, 'pp');
+  const us02Y = withDelta(db.getState('factor:em:US02Y'), now, 'pp');
   return {
-    realYield: withDelta(db.getState('factor:em:UI10Y'), now, 'pp'),
-    usdIndex: withDelta(db.getState('factor:usdIndex'), now, 'pct'),
+    realYield,
+    usdIndex,
+    us10Y,
+    us02Y,
+    breakeven: deriveSpread(us10Y, realYield, now),
+    yieldCurve: deriveSpread(us10Y, us02Y, now),
+    goldSilverRatio: withDelta(db.getState('factor:xauXagRatio'), now, 'pct'),
   };
+}
+
+/**
+ * Pair two daily series into their difference: for every date in `a`, find
+ * the newest observation in `b` at-or-older than that date within
+ * `maxGapDays` (the two sources publish on different calendars). Returns
+ * {values:[{date,value:a-b}], value, asOf, fetchedAt} or null when nothing
+ * pairs — a spread with no anchor is worse than no spread (signals abstain).
+ */
+export function pairSeries(a, b, maxGapDays = 4) {
+  const av = [...(a?.values ?? [])]
+    .filter((p) => Number.isFinite(Date.parse(p?.date)) && Number.isFinite(p?.value))
+    .sort((x, y) => Date.parse(x.date) - Date.parse(y.date)); // 导出助手不信任输入有序
+  const bv = b?.values ?? [];
+  if (!av.length || !bv.length) return null;
+  const gapMs = maxGapDays * DAY;
+  const out = [];
+  for (const p of av) {
+    const t = Date.parse(p.date);
+    let best = null;
+    let bestT = -Infinity;
+    for (const q of bv) {
+      const qt = Date.parse(q?.date);
+      if (!Number.isFinite(qt) || !Number.isFinite(q?.value)) continue;
+      if (qt > t || t - qt > gapMs) continue;
+      if (qt > bestT) { best = q; bestT = qt; }
+    }
+    if (best) out.push({ date: p.date, value: p.value - best.value });
+  }
+  if (!out.length) return null;
+  const last = out[out.length - 1];
+  return {
+    values: out,
+    value: last.value,
+    asOf: last.date,
+    fetchedAt: Math.max(a.fetchedAt ?? 0, b.fetchedAt ?? 0),
+  };
+}
+
+/** Derived spread with delta5d + staleness (either source stale → stale). */
+function deriveSpread(a, b, now) {
+  if (!a || !b) return null;
+  const paired = pairSeries(a, b);
+  if (!paired) return null;
+  const d = withDelta(paired, now, 'pp');
+  if (!d) return null;
+  if (a.stale || b.stale) d.stale = true;
+  return d;
+}
+
+/**
+ * XAU/XAG 现货金银比：gold-api 双端点并发，30 分钟抓取门，按上海日期
+ * 累积历史（同日覆盖）。失败沿用旧缓存、fetchedAt:0 让下轮立即重试。
+ */
+async function getGoldSilverRatio(fetchFn, db, now) {
+  const key = 'factor:xauXagRatio';
+  const cached = db.getState(key);
+  const fresh = cached && now() - (cached.fetchedAt ?? 0) < MAX_AGE_RATIO;
+  if (fresh) return cached;
+  const started = Date.now();
+  try {
+    const headers = { 'user-agent': 'Mozilla/5.0' };
+    const [xauRes, xagRes] = await Promise.all([
+      fetchFn('https://api.gold-api.com/price/XAU', { signal: AbortSignal.timeout(8000), headers }),
+      fetchFn('https://api.gold-api.com/price/XAG', { signal: AbortSignal.timeout(8000), headers }),
+    ]);
+    if (!xauRes?.ok || !xagRes?.ok) {
+      throw new Error(`gold-api http ${xauRes?.status ?? '?'}/${xagRes?.status ?? '?'}`);
+    }
+    const xau = Number((await xauRes.json())?.price);
+    const xag = Number((await xagRes.json())?.price);
+    if (!(xau > 0) || !(xag > 0)) throw new Error('gold-api price missing');
+    const date = new Date(now() + 8 * 3600_000).toISOString().slice(0, 10); // Shanghai date
+    const ratio = xau / xag;
+    const entry = {
+      values: mergeHistory(cached?.values ?? [], [{ date, value: ratio }]).slice(-60),
+      value: ratio,
+      asOf: date,
+      fetchedAt: now(),
+    };
+    db.putState(key, entry);
+    return entry;
+  } catch (e) {
+    const entry = {
+      values: cached?.values ?? [],
+      value: cached?.value ?? null,
+      asOf: cached?.asOf ?? null,
+      fetchedAt: 0,
+      error: describeError(e),
+      errorMs: Date.now() - started,
+      errorAt: new Date(started).toISOString(),
+    };
+    try { db.putState(key, entry); } catch { /* best effort */ }
+    return cached ?? entry;
+  }
 }
 
 /**
@@ -225,16 +330,28 @@ async function getUsdIndex(fetchFn, db, now) {
 
 /**
  * Collect all macro factors for one cycle (network, staleness-gated).
- * Returns {realYield, usdIndex} each {value, asOf, delta5d, stale}|null.
+ * Returns {realYield, usdIndex, us10Y, us02Y, breakeven, yieldCurve}
+ * each {value, asOf, delta5d, stale}|null.
  */
 export async function collectFactors(fetchFn, db, now = () => Date.now()) {
-  const [ry, usd] = await Promise.all([
+  const [ry, usd, u10, u02, gsr] = await Promise.all([
     getEmFactor(fetchFn, db, { key: 'factor:em:UI10Y', secid: '171.UI10Y' }, now).catch(() => null),
     getUsdIndex(fetchFn, db, now).catch(() => null),
+    getEmFactor(fetchFn, db, { key: 'factor:em:US10Y', secid: '171.US10Y' }, now).catch(() => null),
+    getEmFactor(fetchFn, db, { key: 'factor:em:US02Y', secid: '171.US02Y' }, now).catch(() => null),
+    getGoldSilverRatio(fetchFn, db, now).catch(() => null),
   ]);
+  const realYield = withDelta(ry, now, 'pp');
+  const us10Y = withDelta(u10, now, 'pp');
+  const us02Y = withDelta(u02, now, 'pp');
   return {
-    realYield: withDelta(ry, now, 'pp'),
+    realYield,
     usdIndex: withDelta(usd, now, 'pct'),
+    us10Y,
+    us02Y,
+    breakeven: deriveSpread(us10Y, realYield, now),
+    yieldCurve: deriveSpread(us10Y, us02Y, now),
+    goldSilverRatio: withDelta(gsr, now, 'pct'),
   };
 }
 

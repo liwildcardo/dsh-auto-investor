@@ -119,8 +119,28 @@ export function priceLimitBand(rules, prevClose, symbol = null) {
   return { up: prevClose * (1 + pct / 100), down: prevClose * (1 - pct / 100) };
 }
 
-/** Whether a fill price is inside the allowed band (null band = always true). */
-export function withinPriceBand(rules, prevClose, price, symbol = null) {
+/**
+ * Whether a fill price is inside the allowed band (null band = always true).
+ * `quoteBand` = exchange-published limitUp/limitDown from the live quote
+ * (A-share only): when both ends are positive finite numbers they ARE the
+ * rule and override the configured percentage band; anything incomplete
+ * falls back to `priceLimitBand` (config), which may itself be null.
+ */
+export function withinPriceBand(rules, prevClose, price, symbol = null, quoteBand = null) {
+  const up = Number(quoteBand?.up);
+  const down = Number(quoteBand?.down);
+  const positive = Number.isFinite(up) && up > 0 && Number.isFinite(down) && down > 0;
+  // 合理界：A 股板限 ≤20%，真实涨跌停必须落在 prevClose ±30% 内才算可信
+  // （防字段漂移出"看似合理"的假涨停价覆盖配置带）；prevClose 无效时无基线
+  // 可校验，仍信真实带（有真实带总比没有强）。
+  const sane = positive && (
+    !Number.isFinite(prevClose) || prevClose <= 0
+    || (up <= prevClose * 1.3 && up >= prevClose * 0.7
+      && down <= prevClose * 1.3 && down >= prevClose * 0.7)
+  );
+  if (sane) {
+    return price <= up + 1e-9 && price >= down - 1e-9;
+  }
   const band = priceLimitBand(rules, prevClose, symbol);
   if (!band) return true;
   return price <= band.up + 1e-9 && price >= band.down - 1e-9;
