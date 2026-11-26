@@ -94,9 +94,10 @@ test('fetchEmDaily 解析东财日K（date,open,close,high,low,volume）', async
   assert.equal(three[0].volume, null);
 });
 
-function harness(t, { now = () => OPEN, rows = 60 } = {}) {
+function harness(t, { rows = 60, llm } = {}) {
   const db = openDb(join(mkdtempSync(join(tmpdir(), 'ai-seed-')), 'x.db'), { backend: 'json' });
   t.after(() => db.close());
+  let clock = OPEN;
   let emCalls = 0;
   const fetchFn = async (url) => {
     const u = String(url);
@@ -136,10 +137,10 @@ function harness(t, { now = () => OPEN, rows = 60 } = {}) {
   });
   const engine = createProductEngine({
     db, product, fetchFn,
-    llm: async () => JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 }),
-    now,
+    llm: llm ?? (async () => JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 })),
+    now: () => clock,
   });
-  return { engine, db, emCalls: () => emCalls, product };
+  return { engine, db, emCalls: () => emCalls, product, advance: (ms) => { clock += ms; } };
 }
 
 test('seedHistory 为 single 产品播种黄金日线（入 series、30 分钟节流）', async (t) => {
@@ -164,6 +165,42 @@ test('seedHistory 部分种子（<60 根）由 30 分钟节流门拦截重抓', 
   const calls = emCalls();
   await engine.tick();
   assert.equal(emCalls(), calls, '节流门：30 分钟内不重抓');
+});
+
+test('瘦源重种按 ts 去重：节流过期重抓不产生重复行', async (t) => {
+  const { engine, db, emCalls, advance } = harness(t, { rows: 40 });
+  await engine.tick();
+  assert.equal(db.listPoints('goldseed', 'AU9999', 5000).length, 40, '首播 40 行');
+  advance(31 * 60_000); // 过节流门
+  await engine.tick();
+  assert.ok(emCalls() >= 2, '节流过期后确实重抓');
+  assert.equal(db.listPoints('goldseed', 'AU9999', 5000).length, 40, '相同 ts 的行被跳过，无重复');
+});
+
+test('fetchEmDaily 按指定时区构建日界 ts', async () => {
+  const kline = async () => ({ ok: true, json: async () => ({ data: { klines: ['2026-11-20,450.1,452.0'] } }) });
+  const [sh] = await fetchEmDaily(kline, '118.AU9999', 400);
+  assert.equal(sh.ts, Date.parse('2026-11-20T00:00:00+08:00'), '默认上海午夜');
+  const [ny] = await fetchEmDaily(kline, '118.AU9999', 400, 'America/New_York');
+  assert.equal(ny.ts, Date.parse('2026-11-20T00:00:00-05:00'), '纽约午夜（11 月 EST）');
+  const [tokyo] = await fetchEmDaily(kline, '118.AU9999', 400, 'Asia/Tokyo');
+  assert.equal(tokyo.ts, Date.parse('2026-11-20T00:00:00+09:00'), '东京午夜');
+});
+
+test('prompt 宏观块显示新因子（通胀预期/收益率曲线/金银比）', async (t) => {
+  let prompt = null;
+  const { engine } = harness(t, {
+    llm: async (p) => {
+      prompt = p;
+      return JSON.stringify({ action: 'hold', reason: 'r', confidence: 0.6 });
+    },
+  });
+  await engine.runCycle();
+  assert.ok(prompt, 'LLM 被调用并拿到 prompt');
+  assert.match(prompt, /实际收益率/, '既有因子仍在');
+  assert.match(prompt, /通胀预期/, 'breakeven 因子行');
+  assert.match(prompt, /收益率曲线/, 'yieldCurve 因子行');
+  assert.match(prompt, /金银比/, 'goldSilverRatio 因子行');
 });
 
 test('种子不污染 1h 信号 bar 与日开盘基准（Review Focus 3）', async (t) => {

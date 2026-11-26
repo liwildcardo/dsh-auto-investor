@@ -163,6 +163,17 @@ function percentileScore(p, params = {}) {
   return 0;
 }
 
+/** 档位词（与 percentileScore 同阈值）：note 的方向可读性，分数不受影响。 */
+function tierWord(p, params = {}) {
+  const low = params.low ?? 0.3;
+  const high = params.high ?? 0.8;
+  if (p <= low) return '偏低';
+  if (p < 0.5) return '中低';
+  if (p >= high) return '偏高';
+  if (p > 0.65) return '中高';
+  return '';
+}
+
 /**
  * PE/PB 复合估值：两个分位各自打分后取平均（任一源缺失不稀释另一源，
  * 语义与原 noData 弃权一致）。null/undefined/NaN 一律视为缺数据 —— 历史上
@@ -177,7 +188,8 @@ function valuationSignal(ctx, params = {}) {
     const s = percentileScore(p, params);
     if (s == null) return;
     scores.push(s);
-    parts.push(`${label} 分位 ${Math.round(p * 100)}%`);
+    const tier = tierWord(p, params);
+    parts.push(`${label} 分位 ${Math.round(p * 100)}%${tier ? ` ${tier}` : ''}`);
   };
   pick(ctx.pePercentile, 'PE');
   pick(ctx.pbPercentile, 'PB');
@@ -237,7 +249,9 @@ function breakevenInflationSignal(ctx, params = {}) {
   else if (bp >= 10) raw = 2;
   else if (bp >= 3) raw = 1;
   const dir = Math.sign(params.direction ?? 1) || 1;
-  return { score: clampScore(raw * dir), note: `通胀预期 5日${bp >= 0 ? '+' : ''}${bp}bp` };
+  const hint = raw > 0 ? '（通胀预期上行，利好黄金）'
+    : raw < 0 ? '（通胀预期回落，利空黄金）' : '';
+  return { score: clampScore(raw * dir), note: `通胀预期 5日${bp >= 0 ? '+' : ''}${bp}bp${hint}` };
 }
 
 /**
@@ -274,7 +288,8 @@ function goldSilverRatioSignal(ctx, params = {}) {
   else if (p <= -5) raw = -2;
   else if (p <= -1.5) raw = -1;
   const dir = Math.sign(params.direction ?? 1) || 1;
-  return { score: clampScore(raw * dir), note: `金银比 5日${p >= 0 ? '+' : ''}${p.toFixed(2)}%` };
+  const hint = raw > 0 ? '（黄金相对走强）' : raw < 0 ? '（黄金相对走弱）' : '';
+  return { score: clampScore(raw * dir), note: `金银比 5日${p >= 0 ? '+' : ''}${p.toFixed(2)}%${hint}` };
 }
 
 const POSITIVE = ['上涨', '增持', '突破', '利好', '超预期', '增长', '回购', '分红', '降息', '宽松', '创新高'];

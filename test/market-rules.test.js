@@ -114,6 +114,19 @@ test('真实涨跌停（报价字段）优先于配置带，缺失时回退', ()
   assert.equal(withinPriceBand(P.gold.rules, 4000, 4500, null, { up: null, down: null }), true, 'gold 无带恒 true');
 });
 
+test('quoteBand 需在 prevClose ±30% 合理界内，越界回退配置带', () => {
+  const rules = P.ashare.rules; // 配置带 ±10%
+  // 合理界内（涨停 +20% 上限内）→ 真实带优先（同上例）
+  assert.equal(withinPriceBand(rules, 100, 106, 'sh600519', { up: 105, down: 95 }), false, '界内 → 真实带');
+  // 越界（up=500 > 130）→ 视为字段漂移，回退配置带
+  assert.equal(withinPriceBand(rules, 100, 106, 'sh600519', { up: 500, down: 60 }), true, '越界 → 回退配置带(106≤110)');
+  assert.equal(withinPriceBand(rules, 100, 140, 'sh600519', { up: 500, down: 60 }), false, '越界回退后由配置带判定(140>110)');
+  // down 同样受界：down=60 < 70 → 越界
+  assert.equal(withinPriceBand(rules, 100, 95, 'sh600519', { up: 105, down: 60 }), true, 'down 越界 → 回退(95≥90)');
+  // prevClose 无效（无基线可校验）→ 仍信真实带（有总比没有强）
+  assert.equal(withinPriceBand(rules, null, 106, 'sh600519', { up: 105, down: 95 }), false, 'prevClose 无效 → 信真实带');
+});
+
 test('港股按每手股数成交', () => {
   assert.equal(roundLot(P.hk.rules, 150, 'hk00941'), 0);   // 500 股/手
   assert.equal(roundLot(P.hk.rules, 600, 'hk00941'), 500);
