@@ -15,6 +15,8 @@ export default {
   market: {
     kind: 'single',
     fx: 'USDCNY',
+    // 黄金日线种子（东财沪金）：为 '1d' 回测 bar 供数；secid 以 probe 输出为准
+    dailySeed: { kind: 'em', secid: '118.AU9999' },
     async quote(fetchFn, cfg = {}) {
       const [goldRes, fxRes] = await Promise.all([
         fetchFn('https://api.gold-api.com/price/XAU', { signal: AbortSignal.timeout(8000) }),

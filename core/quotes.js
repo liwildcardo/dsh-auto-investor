@@ -133,12 +133,13 @@ export async function fetchFxRate(fetchFn, from = 'USD', timeoutMs = 8000) {
 }
 
 /**
- * Daily close/open/volume history (Tencent kline). Seeds indicators on a fresh
- * install so trend/momentum/RSI can compute before enough live ticks exist.
+ * Daily/weekly/monthly close history (Tencent kline). Seeds indicators on a
+ * fresh install so trend/momentum/RSI can compute before enough live ticks
+ * exist, and feeds long-history backtests ('week'/'month' intervals).
  * Returns [{ts, price, open, high, low, volume}] oldest first.
  */
-export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs = 10000) {
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(symbol)},day,,,${count},qfq`;
+export async function fetchKline(fetchFn, symbol, interval = 'day', count = 120, timeoutMs = 10000) {
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(symbol)},${interval},,,${count},qfq`;
   const res = await fetchFn(url, {
     signal: AbortSignal.timeout(timeoutMs),
     headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://gu.qq.com/' },
@@ -146,7 +147,7 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
   if (!res.ok) throw new Error(`history http ${res.status}`);
   const json = await res.json();
   const node = json?.data?.[symbol] ?? json?.data?.[symbol.toLowerCase()] ?? null;
-  const rows = node?.qfqday ?? node?.day ?? [];
+  const rows = node?.[`qfq${interval}`] ?? node?.[interval] ?? [];
   const out = [];
   const cutoff = Date.now() - 2 * 365 * 86_400_000; // ignore stale/misparsed bars
   for (const r of rows) {
@@ -162,6 +163,44 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
       low: Number(r[4]) || null,
       volume: Number(r[5]) || null,
     });
+  }
+  return out;
+}
+
+/** Back-compat alias: daily bars (the historical seed path). */
+export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs = 10000) {
+  return fetchKline(fetchFn, symbol, 'day', count, timeoutMs);
+}
+
+/**
+ * Eastmoney daily klines (push2his, klt=101) → full bar rows for a secid.
+ * Used as gold's daily-history seed (产品契约 market.dailySeed) so '1d'
+ * backtests have years of data instead of 240 hourly bars.
+ * 3-column legacy payloads (date,open,close) yield null high/low/volume.
+ * ts is built at market-local midnight (Asia/Shanghai for the gold secid).
+ */
+export async function fetchEmDaily(fetchFn, secid, days = 400, timeoutMs = 15_000) {
+  const beg = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10).replaceAll('-', '');
+  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=0&beg=${beg}&end=20991231`;
+  const res = await fetchFn(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://quote.eastmoney.com/' },
+  });
+  if (!res.ok) throw new Error(`em kline http ${res.status}`);
+  const json = await res.json();
+  const out = [];
+  const cutoff = Date.now() - 2 * 365 * 86_400_000;
+  for (const line of json?.data?.klines ?? []) {
+    const p = String(line).split(',');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(p[0] ?? '')) continue;
+    const price = Number(p[2]);
+    const ts = Date.parse(`${p[0]}T00:00:00+08:00`);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts) || ts < cutoff) continue;
+    const num = (i) => {
+      const v = Number(p[i]);
+      return Number.isFinite(v) ? v : null;
+    };
+    out.push({ ts, price, open: num(1), high: num(3), low: num(4), volume: num(5) });
   }
   return out;
 }
