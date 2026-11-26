@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { openDb } from '../lib/db.js';
 import {
   parseEmQuote, parseEmKlines, parseFrankfurterDxy, computeDxy,
-  collectFactors, readFactors, peFromQuote,
+  collectFactors, readFactors, peFromQuote, pairSeries,
 } from '../core/factor-sources.js';
 
 const DAY = 86_400_000;
@@ -174,7 +174,12 @@ test('a fresh single-point cache still seeds history without a quote refetch', a
     return { ok: true, json: async () => ({ data: { f43: 99999 }, rates: {} }) };
   };
   const f = await collectFactors(fetchFn, db, now);
-  assert.ok(!calls.some(u => u.includes('api/qt/stock/get')), 'fresh quote not refetched');
+  // 断言收窄到 UI10Y 报价端点本身：US10Y/US02Y 是新缓存键（首抓正常），
+  // UI10Y 的历史播种走 push2his kline（另一端点，允许）。
+  assert.ok(
+    !calls.some(u => u.includes('push2.eastmoney.com/api/qt/stock/get') && u.includes('secid=171.UI10Y')),
+    'fresh UI10Y quote not refetched',
+  );
   assert.ok(!calls.some(u => u.includes('open.er-api.com')), 'fresh fx not refetched');
   assert.ok(Number.isFinite(f.realYield.delta5d), `seed ran despite fresh gate, got ${f.realYield.delta5d}`);
   assert.ok(Number.isFinite(f.usdIndex.delta5d), 'usd seeded too');
@@ -189,4 +194,61 @@ test('peFromQuote reads field 39 across markets', () => {
   assert.equal(peFromQuote(mk('')), null, 'empty → null');
   assert.equal(peFromQuote(mk('-3')), null, 'negative → null');
   assert.equal(peFromQuote(undefined), null);
+});
+
+test('pairSeries 同日与近距配对（≤4 天）', () => {
+  const a = {
+    values: [{ date: '2026-11-20', value: 4.2 }, { date: '2026-11-21', value: 4.1 }],
+    asOf: '2026-11-21', fetchedAt: 1,
+  };
+  const b = {
+    values: [
+      { date: '2026-11-18', value: 1.9 }, // 3 天前的观测（近距可用）
+      { date: '2026-11-20', value: 2.1 },
+      { date: '2026-11-21', value: 2.2 },
+    ],
+    asOf: '2026-11-21', fetchedAt: 1,
+  };
+  const p = pairSeries(a, b);
+  assert.equal(p.values.length, 2, '两条 a 观测各配一条 b');
+  assert.ok(Math.abs(p.values[0].value - (4.2 - 2.1)) < 1e-9, '同日配对');
+  assert.ok(Math.abs(p.value - (4.1 - 2.2)) < 1e-9, 'value = 最后一对差值');
+  assert.equal(p.asOf, '2026-11-21', 'asOf 取最后一对日期');
+});
+
+test('pairSeries 超过 4 天的观测跳过 → null', () => {
+  const a = { values: [{ date: '2026-11-21', value: 4.1 }], asOf: '2026-11-21', fetchedAt: 1 };
+  const b = { values: [{ date: '2026-11-15', value: 2.0 }], asOf: '2026-11-15', fetchedAt: 1 };
+  assert.equal(pairSeries(a, b), null, '6 天间隔不配对');
+});
+
+test('readFactors 派生 breakeven（us10−ui10）与 yieldCurve（us10−us02）', (t) => {
+  const db = harness(t);
+  const d1 = new Date(Date.now() - 2 * DAY).toISOString().slice(0, 10);
+  const d2 = new Date(Date.now() - DAY).toISOString().slice(0, 10);
+  const seed = (key, v1, v2) => db.putState(key, {
+    values: [{ date: d1, value: v1 }, { date: d2, value: v2 }],
+    asOf: d2, fetchedAt: Date.now(),
+  });
+  seed('factor:em:US10Y', 4.2, 4.1);
+  seed('factor:em:UI10Y', 1.9, 1.95);
+  seed('factor:em:US02Y', 3.6, 3.5);
+  const f = readFactors(db);
+  assert.equal(f.us10Y.value, 4.1, '名义 10Y 直读');
+  assert.ok(Math.abs(f.breakeven.value - (4.1 - 1.95)) < 1e-9, 'breakeven = us10 − ui10');
+  assert.ok(Math.abs(f.yieldCurve.value - (4.1 - 3.5)) < 1e-9, 'yieldCurve = us10 − us02');
+  assert.equal(f.breakeven.stale, false, '新数据不标过期');
+  assert.ok(Number.isFinite(f.breakeven.delta5d), '派生量带 delta5d');
+});
+
+test('readFactors 缺源时对应派生量为 null', (t) => {
+  const db = harness(t);
+  const d = new Date(Date.now() - DAY).toISOString().slice(0, 10);
+  const seed = (key, v) => db.putState(key, { values: [{ date: d, value: v }], asOf: d, fetchedAt: Date.now() });
+  seed('factor:em:US10Y', 4.1);
+  seed('factor:em:UI10Y', 1.95);
+  const f = readFactors(db);
+  assert.ok(Math.abs(f.breakeven.value - (4.1 - 1.95)) < 1e-9, '两源齐 → breakeven 可算');
+  assert.equal(f.yieldCurve, null, '缺 us02 → yieldCurve null');
+  assert.equal(f.us02Y, null, '缺源字段 null');
 });

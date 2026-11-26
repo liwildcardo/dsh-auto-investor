@@ -198,6 +198,43 @@ function usdIndexSignal(ctx, params = {}) {
   return { score: 0, note: `美元 5日${pct.toFixed(2)}%（中性）` };
 }
 
+/**
+ * 通胀预期（名义 10Y − TIPS 10Y）5 日变化：预期上行 → 黄金通胀对冲需求
+ * 增强（利好）；预期快速回落 → 利空。delta5d 单位为百分点（pp），
+ * 阈值 ±3bp / ±10bp。params.direction 可整体反号（如股票产品）。
+ */
+function breakevenInflationSignal(ctx, params = {}) {
+  const f = ctx.breakeven;
+  if (!f) return { score: 0, note: '无通胀预期数据', noData: true };
+  if (f.stale) return { score: 0, note: '通胀预期数据过期', noData: true };
+  if (!Number.isFinite(f.delta5d)) return { score: 0, note: '通胀预期历史不足', noData: true };
+  const bp = Math.round(f.delta5d * 100);
+  let raw = 0;
+  if (bp <= -10) raw = -2;
+  else if (bp <= -3) raw = -1;
+  else if (bp >= 10) raw = 2;
+  else if (bp >= 3) raw = 1;
+  const dir = Math.sign(params.direction ?? 1) || 1;
+  return { score: clampScore(raw * dir), note: `通胀预期 5日${bp >= 0 ? '+' : ''}${bp}bp` };
+}
+
+/**
+ * 收益率曲线（10Y − 2Y 利差，百分点）：倒挂 = 衰退/避险压力（黄金利好、
+ * 股票利空）；过度陡峭 = 过热。方向由 params.direction 按产品设定
+ * （gold +1、us −1）。slope 非有限 → 弃权。
+ */
+function yieldCurveSignal(ctx, params = {}) {
+  const f = ctx.yieldCurve;
+  if (!f) return { score: 0, note: '无收益率曲线数据', noData: true };
+  if (f.stale) return { score: 0, note: '收益率曲线数据过期', noData: true };
+  const slope = f.value;
+  if (!Number.isFinite(slope)) return { score: 0, note: '收益率曲线数据不足', noData: true };
+  const raw = slope <= 0 ? 2 : slope < 0.5 ? 1 : slope > 2 ? -1 : 0;
+  const dir = Math.sign(params.direction ?? 1) || 1;
+  const label = slope <= 0 ? '（倒挂）' : '';
+  return { score: clampScore(raw * dir), note: `10Y−2Y 利差 ${slope.toFixed(2)}pp${label}` };
+}
+
 const POSITIVE = ['上涨', '增持', '突破', '利好', '超预期', '增长', '回购', '分红', '降息', '宽松', '创新高'];
 const NEGATIVE = ['下跌', '减持', '跌破', '利空', '不及预期', '下滑', '处罚', '违约', '加息', '收紧'];
 
@@ -224,6 +261,8 @@ export const SIGNALS = {
   news: newsSentimentSignal,
   realYield: realYieldSignal,
   usdIndex: usdIndexSignal,
+  breakevenInflation: breakevenInflationSignal,
+  yieldCurve: yieldCurveSignal,
 };
 
 /** Evaluate one product's configured signals against a market snapshot. */

@@ -56,6 +56,8 @@ export default {
       { id: 'momentum', params: { period: 8, threshold: 0.02 }, weight: 1 },
       { id: 'rsi', params: { period: 9 }, weight: 0.6 },
       { id: 'valuation', params: { low: 0.3, high: 0.8 }, weight: 0.6 },
+      // 曲线倒挂 = 衰退压力 → 利空美股（direction −1 与黄金相反）
+      { id: 'yieldCurve', weight: 0.3, params: { direction: -1 } },
     ],
     prompt: {
       role: '你是美股投资策略引擎，负责模拟组合的选股与仓位决策。',
@@ -76,6 +78,7 @@ export default {
       { path: 'risk.stopLossPct', min: -15, max: -2, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 3, max: 40, step: 1 },
       { path: 'signals.valuation.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'signals.yieldCurve.weight', min: 0, max: 2, step: 0.1 },
       { path: 'candidates.threshold', min: 0.5, max: 1.5, step: 0.05 },
     ],
   },

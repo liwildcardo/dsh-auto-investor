@@ -100,10 +100,65 @@ function withDelta(entry, now, kind) {
 
 /** Read cached factors (no network) — used by status/prompt. */
 export function readFactors(db, now = () => Date.now()) {
+  const realYield = withDelta(db.getState('factor:em:UI10Y'), now, 'pp');
+  const usdIndex = withDelta(db.getState('factor:usdIndex'), now, 'pct');
+  const us10Y = withDelta(db.getState('factor:em:US10Y'), now, 'pp');
+  const us02Y = withDelta(db.getState('factor:em:US02Y'), now, 'pp');
   return {
-    realYield: withDelta(db.getState('factor:em:UI10Y'), now, 'pp'),
-    usdIndex: withDelta(db.getState('factor:usdIndex'), now, 'pct'),
+    realYield,
+    usdIndex,
+    us10Y,
+    us02Y,
+    breakeven: deriveSpread(us10Y, realYield, now),
+    yieldCurve: deriveSpread(us10Y, us02Y, now),
   };
+}
+
+/**
+ * Pair two daily series into their difference: for every date in `a`, find
+ * the newest observation in `b` at-or-older than that date within
+ * `maxGapDays` (the two sources publish on different calendars). Returns
+ * {values:[{date,value:a-b}], value, asOf, fetchedAt} or null when nothing
+ * pairs — a spread with no anchor is worse than no spread (signals abstain).
+ */
+export function pairSeries(a, b, maxGapDays = 4) {
+  const av = a?.values ?? [];
+  const bv = b?.values ?? [];
+  if (!av.length || !bv.length) return null;
+  const gapMs = maxGapDays * DAY;
+  const out = [];
+  for (const p of av) {
+    const t = Date.parse(p?.date);
+    if (!Number.isFinite(t) || !Number.isFinite(p?.value)) continue;
+    let best = null;
+    let bestT = -Infinity;
+    for (const q of bv) {
+      const qt = Date.parse(q?.date);
+      if (!Number.isFinite(qt) || !Number.isFinite(q?.value)) continue;
+      if (qt > t || t - qt > gapMs) continue;
+      if (qt > bestT) { best = q; bestT = qt; }
+    }
+    if (best) out.push({ date: p.date, value: p.value - best.value });
+  }
+  if (!out.length) return null;
+  const last = out[out.length - 1];
+  return {
+    values: out,
+    value: last.value,
+    asOf: last.date,
+    fetchedAt: Math.max(a.fetchedAt ?? 0, b.fetchedAt ?? 0),
+  };
+}
+
+/** Derived spread with delta5d + staleness (either source stale → stale). */
+function deriveSpread(a, b, now) {
+  if (!a || !b) return null;
+  const paired = pairSeries(a, b);
+  if (!paired) return null;
+  const d = withDelta(paired, now, 'pp');
+  if (!d) return null;
+  if (a.stale || b.stale) d.stale = true;
+  return d;
 }
 
 /**
@@ -225,16 +280,26 @@ async function getUsdIndex(fetchFn, db, now) {
 
 /**
  * Collect all macro factors for one cycle (network, staleness-gated).
- * Returns {realYield, usdIndex} each {value, asOf, delta5d, stale}|null.
+ * Returns {realYield, usdIndex, us10Y, us02Y, breakeven, yieldCurve}
+ * each {value, asOf, delta5d, stale}|null.
  */
 export async function collectFactors(fetchFn, db, now = () => Date.now()) {
-  const [ry, usd] = await Promise.all([
+  const [ry, usd, u10, u02] = await Promise.all([
     getEmFactor(fetchFn, db, { key: 'factor:em:UI10Y', secid: '171.UI10Y' }, now).catch(() => null),
     getUsdIndex(fetchFn, db, now).catch(() => null),
+    getEmFactor(fetchFn, db, { key: 'factor:em:US10Y', secid: '171.US10Y' }, now).catch(() => null),
+    getEmFactor(fetchFn, db, { key: 'factor:em:US02Y', secid: '171.US02Y' }, now).catch(() => null),
   ]);
+  const realYield = withDelta(ry, now, 'pp');
+  const us10Y = withDelta(u10, now, 'pp');
+  const us02Y = withDelta(u02, now, 'pp');
   return {
-    realYield: withDelta(ry, now, 'pp'),
+    realYield,
     usdIndex: withDelta(usd, now, 'pct'),
+    us10Y,
+    us02Y,
+    breakeven: deriveSpread(us10Y, realYield, now),
+    yieldCurve: deriveSpread(us10Y, us02Y, now),
   };
 }
 
