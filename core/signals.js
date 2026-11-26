@@ -235,6 +235,26 @@ function yieldCurveSignal(ctx, params = {}) {
   return { score: clampScore(raw * dir), note: `10Y−2Y 利差 ${slope.toFixed(2)}pp${label}` };
 }
 
+/**
+ * 金银比（XAU/XAG）5 日变化：比值上行 = 黄金相对白银走强（避险/趋势
+ * 情绪），对黄金为顺势信号；下行 = 白银领涨（工业/风险偏好修复）。
+ * delta5d 单位为 %；阈值 ±1.5% / ±5%。
+ */
+function goldSilverRatioSignal(ctx, params = {}) {
+  const f = ctx.goldSilverRatio;
+  if (!f) return { score: 0, note: '无金银比数据', noData: true };
+  if (f.stale) return { score: 0, note: '金银比数据过期', noData: true };
+  if (!Number.isFinite(f.delta5d)) return { score: 0, note: '金银比历史不足', noData: true };
+  const p = f.delta5d;
+  let raw = 0;
+  if (p >= 5) raw = 2;
+  else if (p >= 1.5) raw = 1;
+  else if (p <= -5) raw = -2;
+  else if (p <= -1.5) raw = -1;
+  const dir = Math.sign(params.direction ?? 1) || 1;
+  return { score: clampScore(raw * dir), note: `金银比 5日${p >= 0 ? '+' : ''}${p.toFixed(2)}%` };
+}
+
 const POSITIVE = ['上涨', '增持', '突破', '利好', '超预期', '增长', '回购', '分红', '降息', '宽松', '创新高'];
 const NEGATIVE = ['下跌', '减持', '跌破', '利空', '不及预期', '下滑', '处罚', '违约', '加息', '收紧'];
 
@@ -263,6 +283,7 @@ export const SIGNALS = {
   usdIndex: usdIndexSignal,
   breakevenInflation: breakevenInflationSignal,
   yieldCurve: yieldCurveSignal,
+  goldSilverRatio: goldSilverRatioSignal,
 };
 
 /** Evaluate one product's configured signals against a market snapshot. */

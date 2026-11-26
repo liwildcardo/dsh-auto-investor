@@ -366,6 +366,7 @@ export function createProductEngine({
       usdIndex: factors?.usdIndex ?? null,
       breakeven: factors?.breakeven ?? null,
       yieldCurve: factors?.yieldCurve ?? null,
+      goldSilverRatio: factors?.goldSilverRatio ?? null,
       pePercentile: pePercentileOf(symbol),
     });
     const score = compositeScore(signals);

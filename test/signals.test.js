@@ -118,3 +118,16 @@ test('yieldCurve signal direction parameter（倒挂/陡峭 × 方向）', () =>
   assert.equal(ev({}).noData, true, 'missing → 弃权');
   assert.equal(ev(mk(NaN)).noData, true, '非有限 slope → 弃权');
 });
+
+test('goldSilverRatio signal thresholds（金银比 5 日变化 %）', () => {
+  const mk = (delta5d, extra = {}) => ({ goldSilverRatio: { delta5d, stale: false, ...extra } });
+  const ev = (ctx, params) => evaluateSignals([{ id: 'goldSilverRatio', params }], ctx)[0];
+  assert.equal(ev(mk(5.2)).score, 2, '+5.2% → +2');
+  assert.equal(ev(mk(1.8)).score, 1, '+1.8% → +1');
+  assert.equal(ev(mk(-1.8)).score, -1, '−1.8% → −1');
+  assert.equal(ev(mk(-5.2)).score, -2, '−5.2% → −2');
+  assert.equal(ev(mk(0.5)).score, 0, '0.5% → 中性');
+  assert.equal(ev(mk(5.2), { direction: -1 }).score, -2, 'direction −1 反号');
+  assert.equal(ev(mk(5.2, { stale: true })).noData, true, 'stale → 弃权');
+  assert.equal(ev({}).noData, true, 'missing → 弃权');
+});
