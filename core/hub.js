@@ -3,6 +3,7 @@
  * 供路由与 Agent 工具调用。单产品形态（旧测试）仍直接传 service。
  */
 import { searchSymbols } from './quotes.js';
+import { probePipelines } from './probe.js';
 
 export function createHub({ engines, products, fetchFn = undefined }) {
   const byId = new Map(engines.map(e => [e.id, e]));
@@ -41,5 +42,7 @@ export function createHub({ engines, products, fetchFn = undefined }) {
       return searchSymbols(fetchFn, q, product?.id);
     },
     tickAll: () => Promise.all(engines.map(e => e.tick().catch(() => null))),
+    // 数据源 go/no-go 探测：走生产 fetchFn（含 web 路由），无 fetchFn → 空报告。
+    probe: () => probePipelines(fetchFn),
   };
 }
