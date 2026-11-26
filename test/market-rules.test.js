@@ -101,6 +101,19 @@ test('涨跌停按板块区分：创业板/科创板 ±20%，主板 ±10%', () =
   assert.equal(priceLimitBand(P.ashare.rules, 10, 'sh600519').up, 11);
 });
 
+test('真实涨跌停（报价字段）优先于配置带，缺失时回退', () => {
+  const rules = P.ashare.rules; // 配置带 ±10%
+  const real = { up: 105, down: 95 };
+  // 价格 106：真实带（±5%）外 → 拒绝；配置带（±10%）内 → 若无真实带则放行
+  assert.equal(withinPriceBand(rules, 100, 106, 'sh600519', real), false, '真实带优先');
+  assert.equal(withinPriceBand(rules, 100, 106, 'sh600519', null), true, '无真实带 → 配置带');
+  assert.equal(withinPriceBand(rules, 100, 106, 'sh600519', { up: null, down: 95 }), true, '带不完整 → 回退配置带');
+  assert.equal(withinPriceBand(rules, 100, 94, 'sh600519', real), false, '真实下限');
+  assert.equal(withinPriceBand(rules, 100, 96, 'sh600519', real), true, '真实带内放行');
+  // 黄金：无配置带、无真实带 → 恒放行（现状不变）
+  assert.equal(withinPriceBand(P.gold.rules, 4000, 4500, null, { up: null, down: null }), true, 'gold 无带恒 true');
+});
+
 test('港股按每手股数成交', () => {
   assert.equal(roundLot(P.hk.rules, 150, 'hk00941'), 0);   // 500 股/手
   assert.equal(roundLot(P.hk.rules, 600, 'hk00941'), 500);

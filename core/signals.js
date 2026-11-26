@@ -151,17 +151,39 @@ function volumeSignal(ctx, params = {}) {
   return { score: 0, note: `量比 ${r.toFixed(2)}` };
 }
 
-function valuationSignal(ctx, params = {}) {
-  const p = Number(ctx.pePercentile);
-  // noData: without PE the signal abstains (does not dilute the composite).
-  if (!Number.isFinite(p)) return { score: 0, note: '无估值数据', noData: true };
+/** Percentile → score with the valuation thresholds; null = no data. */
+function percentileScore(p, params = {}) {
+  if (!Number.isFinite(p)) return null;
   const low = params.low ?? 0.3;
   const high = params.high ?? 0.8;
-  if (p <= low) return { score: 2, note: `PE 分位 ${(p * 100).toFixed(0)}% 偏低` };
-  if (p < 0.5) return { score: 1, note: `PE 分位 ${(p * 100).toFixed(0)}% 中低` };
-  if (p >= high) return { score: -2, note: `PE 分位 ${(p * 100).toFixed(0)}% 偏高` };
-  if (p > 0.65) return { score: -1, note: `PE 分位 ${(p * 100).toFixed(0)}% 中高` };
-  return { score: 0, note: `PE 分位 ${(p * 100).toFixed(0)}%` };
+  if (p <= low) return 2;
+  if (p < 0.5) return 1;
+  if (p >= high) return -2;
+  if (p > 0.65) return -1;
+  return 0;
+}
+
+/**
+ * PE/PB 复合估值：两个分位各自打分后取平均（任一源缺失不稀释另一源，
+ * 语义与原 noData 弃权一致）。null/undefined/NaN 一律视为缺数据 —— 历史上
+ * `Number(null)===0` 会把"无 PE"当"最便宜"打 +2，此处不再复现。
+ */
+function valuationSignal(ctx, params = {}) {
+  const scores = [];
+  const parts = [];
+  const pick = (v, label) => {
+    if (v == null) return;
+    const p = Number(v);
+    const s = percentileScore(p, params);
+    if (s == null) return;
+    scores.push(s);
+    parts.push(`${label} 分位 ${Math.round(p * 100)}%`);
+  };
+  pick(ctx.pePercentile, 'PE');
+  pick(ctx.pbPercentile, 'PB');
+  if (!scores.length) return { score: 0, note: '无估值数据', noData: true };
+  const avg = Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100;
+  return { score: avg, note: parts.join(' / ') };
 }
 
 /**

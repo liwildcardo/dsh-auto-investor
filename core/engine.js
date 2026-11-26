@@ -368,6 +368,7 @@ export function createProductEngine({
       yieldCurve: factors?.yieldCurve ?? null,
       goldSilverRatio: factors?.goldSilverRatio ?? null,
       pePercentile: pePercentileOf(symbol),
+      pbPercentile: pbPercentileOf(symbol),
     });
     const score = compositeScore(signals);
     return { symbol, score, signals, price: priceOf(symbol) };
@@ -385,6 +386,22 @@ export function createProductEngine({
     if (pes.length < 2) return 0.5; // single-name pool → neutral (spec §9)
     const below = pes.filter(x => x < pe).length;
     return Math.round((below / (pes.length - 1)) * 100) / 100;
+  }
+
+  /** Cross-sectional PB percentile within the pool (1 = cheapest in pool).
+   *  PB 仅 A 股报价解析（parseTencent 的 sh/sz 门），美/港恒 null →
+   *  valuation 信号自动回退纯 PE。 */
+  function pbPercentileOf(symbol) {
+    if (product.market.kind === 'single') return null;
+    const pbs = pool()
+      .map(w => quote?.[w.symbol]?.pb)
+      .filter(p => Number.isFinite(p) && p > 0)
+      .sort((a, b) => a - b);
+    const pb = quote?.[symbol]?.pb;
+    if (!Number.isFinite(pb) || pb <= 0) return null;
+    if (pbs.length < 2) return 0.5; // single-name pool → neutral
+    const below = pbs.filter(x => x < pb).length;
+    return Math.round((below / (pbs.length - 1)) * 100) / 100;
   }
 
   /** Candidate threshold: version-evolved > product default > 0.8. */
@@ -451,8 +468,8 @@ export function createProductEngine({
       '## 宏观因子',
       ...factorLines(ctx),
       ...(ctx.peTable?.length
-        ? ['', '## 个股基本面（PE / 池内分位，分位低=相对便宜）',
-          ...ctx.peTable.map(x => `- ${x.name}(${x.symbol}) PE ${x.pe}（池内分位 ${x.percentile ?? '—'}）`)]
+        ? ['', '## 个股基本面（PE/PB 与池内分位，分位低=相对便宜）',
+          ...ctx.peTable.map(x => `- ${x.name}(${x.symbol}) PE ${x.pe}${x.pb != null ? ` / PB ${x.pb}` : ''}（池内分位 ${x.percentile ?? '—'}）`)]
         : []),
       ...(product.market.kind === 'multi'
         ? ['', '## 每手金额（买入至少一手；超过单笔上限的标的买不了，不要选）',
@@ -627,7 +644,11 @@ export function createProductEngine({
     if (!isSessionOpen(cfg.rules, now(), cfg.timezone)) return { ok: false, reason: '非交易时段' };
 
     const prevClose = prevCloseOf(symbol);
-    if (!withinPriceBand(cfg.rules, prevClose, price, symbol)) return { ok: false, reason: '超出涨跌停价格区间' };
+    // 真实涨跌停（A股报价字段）优先于配置带；美/港报价无此字段 → 配置带。
+    const quoteBand = product.market.kind === 'single'
+      ? { up: quote?.limitUp, down: quote?.limitDown }
+      : { up: quote?.[symbol]?.limitUp, down: quote?.[symbol]?.limitDown };
+    if (!withinPriceBand(cfg.rules, prevClose, price, symbol, quoteBand)) return { ok: false, reason: '超出涨跌停价格区间' };
 
     // Frequency discipline applies to ENTRIES only: risk/LLM sells reduce
     // exposure and must never be blocked by churn controls.
@@ -867,6 +888,7 @@ export function createProductEngine({
             symbol: w.symbol,
             name: w.name,
             pe: quote?.[w.symbol]?.pe ?? null,
+            pb: quote?.[w.symbol]?.pb ?? null,
             percentile: pePercentileOf(w.symbol),
           })).filter(x => Number.isFinite(x.pe))
           : [],

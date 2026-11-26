@@ -131,3 +131,23 @@ test('goldSilverRatio signal thresholds（金银比 5 日变化 %）', () => {
   assert.equal(ev(mk(5.2, { stale: true })).noData, true, 'stale → 弃权');
   assert.equal(ev({}).noData, true, 'missing → 弃权');
 });
+
+test('valuation PE/PB 复合：两源平均、单源回退、双缺弃权', () => {
+  const ev = (ctx, params = { low: 0.3, high: 0.8 }) =>
+    evaluateSignals([{ id: 'valuation', params }], ctx)[0];
+  // 两源皆高分 → 平均仍为 +2
+  assert.equal(ev({ pePercentile: 0.2, pbPercentile: 0.1 }).score, 2, '双高 → +2');
+  // 真正的平均：pe +1（0.4）与 pb +2（0.2）→ 1.5
+  assert.equal(ev({ pePercentile: 0.4, pbPercentile: 0.2 }).score, 1.5, '异分取平均');
+  // 只有 PE：与旧逻辑逐位一致（pb 缺失不稀释）
+  assert.equal(ev({ pePercentile: 0.2, pbPercentile: undefined }).score, 2, 'pe-only 与旧一致');
+  assert.equal(ev({ pePercentile: 0.4 }).score, 1, 'pe-only 中档');
+  // 只有 PB
+  assert.equal(ev({ pePercentile: undefined, pbPercentile: 0.9 }).score, -2, 'pb-only 也生效');
+  // 双缺 → 弃权
+  const none = ev({});
+  assert.equal(none.score, 0);
+  assert.equal(none.noData, true, '双缺 → noData');
+  // null 视为缺数据（历史 Number(null)=0 → +2 是缺陷，不再复现）
+  assert.equal(ev({ pePercentile: null, pbPercentile: null }).noData, true, '双 null → noData');
+});
