@@ -354,6 +354,8 @@ export function createProductEngine({
       // Macro factors are product-level; PE percentile is pool cross-sectional.
       realYield: factors?.realYield ?? null,
       usdIndex: factors?.usdIndex ?? null,
+      breakeven: factors?.breakeven ?? null,
+      yieldCurve: factors?.yieldCurve ?? null,
       pePercentile: pePercentileOf(symbol),
     });
     const score = compositeScore(signals);

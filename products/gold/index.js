@@ -53,6 +53,8 @@ export default {
       { id: 'rsi', params: { period: 14 }, weight: 0.6 },
       { id: 'realYield', weight: 0.8 },
       { id: 'usdIndex', weight: 0.6 },
+      { id: 'breakevenInflation', weight: 0.7 },
+      { id: 'yieldCurve', weight: 0.4, params: { direction: 1 } },
     ],
     prompt: {
       role: '你是黄金投资策略引擎，负责招行黄金账户的模拟投资决策。',
@@ -69,6 +71,8 @@ export default {
       { path: 'risk.takeProfitPct', min: 1, max: 20, step: 0.5 },
       { path: 'signals.realYield.weight', min: 0, max: 2, step: 0.1 },
       { path: 'signals.usdIndex.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'signals.breakevenInflation.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'signals.yieldCurve.weight', min: 0, max: 2, step: 0.1 },
     ],
   },
 

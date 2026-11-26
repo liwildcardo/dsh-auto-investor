@@ -96,3 +96,25 @@ test('noData signals abstain instead of diluting the composite', () => {
   assert.equal(compositeScore(evaluated), 2, 'only the informed signal counts');
   assert.equal(compositeScore([{ score: 0, noData: true }]), 0, 'all abstain → 0');
 });
+
+test('breakevenInflation signal thresholds（5日通胀预期变化 bp）', () => {
+  const mk = (delta5d, extra = {}) => ({ breakeven: { delta5d, stale: false, ...extra } });
+  const ev = (ctx, params) => evaluateSignals([{ id: 'breakevenInflation', params }], ctx)[0];
+  assert.equal(ev(mk(-0.12)).score, -2, '−12bp → −2');
+  assert.equal(ev(mk(-0.04)).score, -1, '−4bp → −1');
+  assert.equal(ev(mk(0.12)).score, 2, '+12bp → +2');
+  assert.equal(ev(mk(0.02)).score, 0, '+2bp → 中性');
+  assert.equal(ev(mk(0.12, { stale: true })).noData, true, 'stale → 弃权');
+  assert.equal(ev({}).noData, true, 'missing → 弃权');
+});
+
+test('yieldCurve signal direction parameter（倒挂/陡峭 × 方向）', () => {
+  const mk = (value, extra = {}) => ({ yieldCurve: { value, stale: false, ...extra } });
+  const ev = (ctx, params) => evaluateSignals([{ id: 'yieldCurve', params }], ctx)[0];
+  assert.equal(ev(mk(-0.3)).score, 2, '倒挂 → +2（默认 direction 1）');
+  assert.equal(ev(mk(-0.3), { direction: -1 }).score, -2, 'direction −1 反号');
+  assert.equal(ev(mk(1.2)).score, 0, '正常斜率 → 中性');
+  assert.equal(ev(mk(3.0)).score, -1, '过度陡峭 → −1');
+  assert.equal(ev({}).noData, true, 'missing → 弃权');
+  assert.equal(ev(mk(NaN)).noData, true, '非有限 slope → 弃权');
+});
