@@ -4,9 +4,25 @@
  */
 import { zonedEpoch } from './market-rules.js';
 
-const FIELD = { price: 3, prevClose: 4, open: 5, volume: 6, pe: 39 };
+const FIELD = {
+  price: 3, prevClose: 4, open: 5, volume: 6, pe: 39,
+  turnover: 38, pb: 46, limitUp: 47, limitDown: 48, volRatio: 49,
+};
 
-/** Parse the `v_sh600000="1~name~code~..."` payload into normalized quotes. */
+/** Positive-finite parse: '' / '--' / 0 / NaN → null (never a fake 0). */
+const pos = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+/**
+ * Parse the `v_sh600000="1~name~code~..."` payload into normalized quotes.
+ * Extended fields (pb/limitUp/limitDown/turnover/volRatio) are parsed for
+ * A-share (sh/sz) payloads ONLY:实测 hk/us 载荷字段位不对齐
+ * （hk46='TENCENT'、us47='Apple Inc.'、us48 为有限数值会伪装成跌停价），
+ * 这些市场一律 null → 估值回退纯 PE、涨跌停回退配置带。索引漂移时
+ * 防御性 pos() 也会得到 null 并降级，不会抛错。
+ */
 export function parseTencent(text) {
   const out = [];
   for (const m of String(text ?? '').matchAll(/v_([a-z]{2}[A-Za-z0-9.]+)="([^"]*)"/g)) {
@@ -14,7 +30,8 @@ export function parseTencent(text) {
     const f = body.split('~');
     const price = Number(f[FIELD.price]);
     if (!Number.isFinite(price) || price <= 0) continue;
-    const pe = Number(f[FIELD.pe]);
+    const pe = pos(f[FIELD.pe]);
+    const cn = symbol.startsWith('sh') || symbol.startsWith('sz');
     out.push({
       symbol,
       price,
@@ -22,7 +39,12 @@ export function parseTencent(text) {
       open: Number(f[FIELD.open]) || null,
       volume: Number(f[FIELD.volume]) || 0,
       // PE(TTM) — same field index on A-share/HK/US payloads (verified).
-      pe: Number.isFinite(pe) && pe > 0 ? pe : null,
+      pe,
+      pb: cn ? pos(f[FIELD.pb]) : null,
+      limitUp: cn ? pos(f[FIELD.limitUp]) : null,
+      limitDown: cn ? pos(f[FIELD.limitDown]) : null,
+      turnover: cn ? pos(f[FIELD.turnover]) : null,
+      volRatio: cn ? pos(f[FIELD.volRatio]) : null,
       currency: symbol.startsWith('us') ? 'USD' : symbol.startsWith('hk') ? 'HKD' : 'CNY',
     });
   }

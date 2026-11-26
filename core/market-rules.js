@@ -119,8 +119,19 @@ export function priceLimitBand(rules, prevClose, symbol = null) {
   return { up: prevClose * (1 + pct / 100), down: prevClose * (1 - pct / 100) };
 }
 
-/** Whether a fill price is inside the allowed band (null band = always true). */
-export function withinPriceBand(rules, prevClose, price, symbol = null) {
+/**
+ * Whether a fill price is inside the allowed band (null band = always true).
+ * `quoteBand` = exchange-published limitUp/limitDown from the live quote
+ * (A-share only): when both ends are positive finite numbers they ARE the
+ * rule and override the configured percentage band; anything incomplete
+ * falls back to `priceLimitBand` (config), which may itself be null.
+ */
+export function withinPriceBand(rules, prevClose, price, symbol = null, quoteBand = null) {
+  const up = Number(quoteBand?.up);
+  const down = Number(quoteBand?.down);
+  if (Number.isFinite(up) && up > 0 && Number.isFinite(down) && down > 0) {
+    return price <= up + 1e-9 && price >= down - 1e-9;
+  }
   const band = priceLimitBand(rules, prevClose, symbol);
   if (!band) return true;
   return price <= band.up + 1e-9 && price >= band.down - 1e-9;
