@@ -75,10 +75,10 @@
 
 | # | 档 | 管道 | 源与接口 | 频率 | 派生量 | 进入方式 | 降级策略 | 验证 |
 |---|----|------|---------|------|--------|---------|---------|------|
-| 1 | 0 | 腾讯报价字段扩展 | `qt.gtimg.cn` 现有请求，解析 f46=PB、f44/f45=流通/总市值、f47/f48=涨停/跌停价、f49=量比、f38=换手率、f43=振幅、f52=动态PE | 随现有 tick | PB 分位（与 PE 合成复合估值）、换手率分位、真实涨跌停价 | SIGNALS `valuation` 升级为 PE+PB 复合；`withinPriceBand` 优先用真实涨跌停价 | 字段缺失 → 该字段 null，估值信号回退纯 PE | ✅（sh600519 实测载荷）；⚠️ 美/港载荷字段索引需逐市场复验（PE f39 有先例） |
+| 1 | 0 | 腾讯报价字段扩展 | `qt.gtimg.cn` 现有请求；**B1 解析** f46=PB、f47/f48=涨停/跌停价、f38=换手率、f49=量比（仅 sh/sz，见下行验证列）；f44/f45 市值、f43 振幅、f52 动态 PE 载荷中可得但**未解析**，留待有消费方时启用 | 随现有 tick | PB 分位（与 PE 合成复合估值）、真实涨跌停价（换手率/量比已入报价结构，分位信号待有消费方时接入） | SIGNALS `valuation` 升级为 PE+PB 复合；`withinPriceBand` 优先用真实涨跌停价 | 字段缺失 → 该字段 null，估值信号回退纯 PE | ✅（sh600519 实测载荷）；⚠️ 美/港载荷字段索引不对齐（实测证实）→ 扩展字段仅 sh/sz 解析；STAR/ChiNext 沿用 sh/sz 布局假设（fixture 仅证主板，±30% 合理界为 deferred minor） |
 | 2 | 0 | 白银联动 | `api.gold-api.com/price/XAG`（与现用 XAU 同域） | 每 30min 缓存 | 金银比 = XAU/XAG；60 日累积分位 | SIGNAL `goldSilverRatio`（gold 产品） | 失败 → 累积历史沿用，delta 不足则 noData | ✅ HTTP 200 实测 |
 | 3 | 0 | 名义收益率与利差 | 东财 `171.US10Y`、`171.US02Y`（与 UI10Y 同一 `getEmFactor`，仅 secid 不同） | 26h 门，同现有 | 通胀预期 = US10Y − UI10Y（同日配对）；2s10s 利差；各自 delta5d、60 日 z-score | SIGNAL `breakevenInflation`、`yieldCurve`（gold/us） | 沿用 getEmFactor 错误模式；两源日期不对齐 → 用 ≤ 当日最近配对 | 🔬（同接口族，push2 已在 web 路由名单） |
-| 4 | 0 | 周/月K长历史 | `web.ifzq.gtimg.cn` 现有 fqkline，参数改 `week`/`month` | 播种一次 + 30min 重试门 | 5 年+ 周频收盘序列（`fetchKline` 按需可取） | **B1 交付 fetcher（✅ 实测），持久化播种暂缓**：Q1 已把回测统一到日线，周线序列当前无消费方；series 表无 interval 列，硬写会污染日线 bar。若后续出现周线消费方，按 `seedDailyHistory` 同款模式 + 独立存储回填（归属见 §7 B5） | 失败 → 现有 120 日日K照常 | ✅（B1 实测通过） |
+| 4 | 0 | 周/月K长历史 | `web.ifzq.gtimg.cn` 现有 fqkline，参数改 `week`/`month` | 按需抓取（**无持久化**，B1 不播种） | 周频收盘序列按需可取；**5 年+受 fetchKline 现有 2 年 cutoff 截断**，放宽归 B5 | **B1 交付 fetcher（✅ 实测），持久化播种暂缓**：Q1 决策将回测统一到日线（gold/us 的 1h→1d 接线在 B5），周线序列当前无消费方；series 表无 interval 列，硬写会污染日线 bar。若后续出现周线消费方，按 `seedDailyHistory` 同款模式 + 独立存储回填（归属见 §7 B5） | 失败 → 现有 120 日日K照常 | ✅（B1 实测通过） |
 | 5 | 1 | A 股宽度与板块 | 东财 `clist` 全市场列表（fs 全 A + 行业板块，fields=f2,f3,f12,f14,f100） | 盘中 15min 缓存 | 涨跌家数比、涨跌停家数；个股所属行业当日涨幅（截面） | SIGNAL `breadth`、`sectorMomentum`（ashare）；prompt 展示板块表 | 请求失败 → 本轮两信号 noData | 🔬 |
 | 6 | 1 | VIX | CBOE 官方 CSV `cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv` | 26h 门 | VIX 收盘、60 日分位、delta5d | SIGNAL `vixRegime`（gold/us/hk：高波动 → 避险/降仓倾向） | 失败沿用缓存；首拉失败 → noData | 🔬（官方 CDN，预期可得） |
 | 7 | 1 | CFTC 持仓（COT） | CFTC 官方历史持仓 TXT/ZIP（dehistory 目录，黄金期货族） | 周频，26h×7 门 | 非商业净多头 / 总持仓比、60 周分位 | SIGNAL `cotPositioning`（gold） | 端点探测失败 → 该管道 no-go，记录后跳过 | 🔬（具体端点探测阶段确认） |
@@ -123,7 +123,7 @@
 | B2 | 管道 5/6/8（宽度板块、VIX、Stooq）+ 对应 SIGNALS | B1 探测框架 |
 | B3 | 管道 7/11/12/13（持仓与基本面）+ 对应 SIGNALS | B1；各源探测通过 |
 | B4 | 管道 9/10/14（经济数据、FRED、日历）+ prompt 宏观块扩展 | B1；日历放最后 |
-| B5 | Part 2 参数与回测（ATR、vol-targeting、分组、regime、回测费用/指标/样本外/敏感性）＋ 长历史数据层最终归属（Q1 的 640 根日线种子扩量、周线持久化——仅当届时存在周线消费方） | 与 B1–B4 可并行 |
+| B5 | Part 2 参数与回测（ATR、vol-targeting、分组、regime、回测费用/指标/样本外/敏感性）＋ 长历史数据层最终归属（Q1 的 640 根日线种子扩量、周线持久化——仅当届时存在周线消费方；**fetchKline 的 2 年 cutoff 对 640 根日线同样偏紧，一并放宽**） | 与 B1–B4 可并行 |
 
 每批完成标准：探测通过（或记录 no-go）→ 接入 → 单测（mock fetch + fixture）→ 现有测试全绿。
 
