@@ -124,14 +124,15 @@ export function readFactors(db, now = () => Date.now()) {
  * pairs — a spread with no anchor is worse than no spread (signals abstain).
  */
 export function pairSeries(a, b, maxGapDays = 4) {
-  const av = a?.values ?? [];
+  const av = [...(a?.values ?? [])]
+    .filter((p) => Number.isFinite(Date.parse(p?.date)) && Number.isFinite(p?.value))
+    .sort((x, y) => Date.parse(x.date) - Date.parse(y.date)); // 导出助手不信任输入有序
   const bv = b?.values ?? [];
   if (!av.length || !bv.length) return null;
   const gapMs = maxGapDays * DAY;
   const out = [];
   for (const p of av) {
-    const t = Date.parse(p?.date);
-    if (!Number.isFinite(t) || !Number.isFinite(p?.value)) continue;
+    const t = Date.parse(p.date);
     let best = null;
     let bestT = -Infinity;
     for (const q of bv) {

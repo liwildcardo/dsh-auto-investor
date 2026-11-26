@@ -230,6 +230,20 @@ test('pairSeries 超过 4 天的观测跳过 → null', () => {
   assert.equal(pairSeries(a, b), null, '6 天间隔不配对');
 });
 
+test('pairSeries 对未排序输入按日期取最新配对（value/asOf 不随数组末尾漂移）', () => {
+  const a = {
+    values: [{ date: '2026-11-21', value: 4.1 }, { date: '2026-11-20', value: 4.2 }], // 乱序
+    asOf: '2026-11-21', fetchedAt: 1,
+  };
+  const b = {
+    values: [{ date: '2026-11-20', value: 2.1 }, { date: '2026-11-21', value: 2.2 }],
+    asOf: '2026-11-21', fetchedAt: 1,
+  };
+  const p = pairSeries(a, b);
+  assert.equal(p.asOf, '2026-11-21', 'asOf = 最新日期，而非数组末尾元素');
+  assert.ok(Math.abs(p.value - (4.1 - 2.2)) < 1e-9, 'value 来自最新日期配对');
+});
+
 test('readFactors 派生 breakeven（us10−ui10）与 yieldCurve（us10−us02）', (t) => {
   const db = harness(t);
   const d1 = new Date(Date.now() - 2 * DAY).toISOString().slice(0, 10);

@@ -210,8 +210,11 @@ export function createProductEngine({
     const seededAt = db.getState(key) ?? 0;
     if (now() - seededAt < 30 * 60_000) return;
     try {
-      const rows = await fetchEmDaily(fetchFn, seed.secid, 400);
+      const rows = await fetchEmDaily(fetchFn, seed.secid, 400, cfg.timezone);
+      // 瘦源重抓：按 ts 去重，重复行不再插入（否则行数/存储随重抓膨胀）。
+      const existing = new Set(db.listPoints(cfg.id, symbol, 5000).map((p) => p.ts));
       for (const r of rows) {
+        if (existing.has(r.ts)) continue;
         db.insertPoint({
           ts: r.ts, product: cfg.id, symbol,
           price: r.price, open: r.open, high: r.high, low: r.low, volume: r.volume, pe: null,
@@ -402,35 +405,28 @@ export function createProductEngine({
     return { symbol, score, signals, price: priceOf(symbol) };
   }
 
-  /** Cross-sectional PE percentile within the pool (1 = cheapest in pool). */
-  function pePercentileOf(symbol) {
+  /** Cross-sectional percentile of `read(symbol)` within the pool
+   *  (1 = cheapest in pool). Shared by PE/PB so the two cannot drift apart. */
+  function percentileOf(read, symbol) {
     if (product.market.kind === 'single') return null;
-    const pes = pool()
-      .map(w => quote?.[w.symbol]?.pe)
+    const vals = pool()
+      .map(w => read(w.symbol))
       .filter(p => Number.isFinite(p) && p > 0)
       .sort((a, b) => a - b);
-    const pe = quote?.[symbol]?.pe;
-    if (!Number.isFinite(pe) || pe <= 0) return null;
-    if (pes.length < 2) return 0.5; // single-name pool → neutral (spec §9)
-    const below = pes.filter(x => x < pe).length;
-    return Math.round((below / (pes.length - 1)) * 100) / 100;
+    const own = read(symbol);
+    if (!Number.isFinite(own) || own <= 0) return null;
+    if (vals.length < 2) return 0.5; // single-name pool → neutral (spec §9)
+    const below = vals.filter(x => x < own).length;
+    return Math.round((below / (vals.length - 1)) * 100) / 100;
   }
 
-  /** Cross-sectional PB percentile within the pool (1 = cheapest in pool).
+  /** Cross-sectional PE percentile within the pool. */
+  const pePercentileOf = (symbol) => percentileOf((sym) => quote?.[sym]?.pe, symbol);
+
+  /** Cross-sectional PB percentile within the pool.
    *  PB 仅 A 股报价解析（parseTencent 的 sh/sz 门），美/港恒 null →
    *  valuation 信号自动回退纯 PE。 */
-  function pbPercentileOf(symbol) {
-    if (product.market.kind === 'single') return null;
-    const pbs = pool()
-      .map(w => quote?.[w.symbol]?.pb)
-      .filter(p => Number.isFinite(p) && p > 0)
-      .sort((a, b) => a - b);
-    const pb = quote?.[symbol]?.pb;
-    if (!Number.isFinite(pb) || pb <= 0) return null;
-    if (pbs.length < 2) return 0.5; // single-name pool → neutral
-    const below = pbs.filter(x => x < pb).length;
-    return Math.round((below / (pbs.length - 1)) * 100) / 100;
-  }
+  const pbPercentileOf = (symbol) => percentileOf((sym) => quote?.[sym]?.pb, symbol);
 
   function candidates(news) {
     const list = product.market.kind === 'single'
@@ -454,6 +450,10 @@ export function createProductEngine({
     };
     const ry = f.realYield;
     const usd = f.usdIndex;
+    const be = f.breakeven;
+    const yc = f.yieldCurve;
+    const gsr = f.goldSilverRatio;
+    const fmtVal = (v, unit) => (Number.isFinite(v) ? `${v.toFixed(2)}${unit}` : '—');
     return [
       ry
         ? `实际收益率 ${Number.isFinite(ry.value) ? `${ry.value}%` : '—'}（5日 ${fmtDelta(ry.delta5d, 'bp')}，数据截至 ${ry.asOf}）${mark(ry)}`
@@ -461,6 +461,15 @@ export function createProductEngine({
       usd
         ? `美元指数 ${Number.isFinite(usd.value) ? usd.value.toFixed(2) : '—'}（5日 ${fmtDelta(usd.delta5d, 'pct')}，数据截至 ${usd.asOf}）${mark(usd)}`
         : '美元指数 数据不可用',
+      be
+        ? `通胀预期 ${fmtVal(be.value, '%')}（5日 ${fmtDelta(be.delta5d, 'bp')}，数据截至 ${be.asOf}）${mark(be)}`
+        : '通胀预期 数据不可用',
+      yc
+        ? `收益率曲线(10Y−2Y) ${fmtVal(yc.value, 'pp')}（5日 ${fmtDelta(yc.delta5d, 'bp')}，数据截至 ${yc.asOf}）${mark(yc)}`
+        : '收益率曲线 数据不可用',
+      gsr
+        ? `金银比 ${Number.isFinite(gsr.value) ? gsr.value.toFixed(1) : '—'}（5日 ${fmtDelta(gsr.delta5d, 'pct')}，数据截至 ${gsr.asOf}）${mark(gsr)}`
+        : '金银比 数据不可用',
     ];
   }
 

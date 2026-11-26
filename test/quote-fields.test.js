@@ -59,3 +59,20 @@ test('parseTencent 损坏字段位 → 扩展字段 null 且不抛错', () => {
   assert.equal(q2.pb, null, '空串 → null（0 不算有效 PB）');
   assert.equal(q2.limitUp, null);
 });
+
+test('sz/科创板载荷同样解析扩展字段（fixture 钉住 sz 分支与 sh688 布局）', () => {
+  const text = readFileSync(new URL('./fixtures/tencent-cn-extra.txt', import.meta.url), 'utf8');
+  const quotes = parseTencent(text);
+  const sz = quotes.find((q) => q.symbol === 'sz300750');   // 创业板
+  const star = quotes.find((q) => q.symbol === 'sh688981'); // 科创板
+  assert.ok(sz && star, 'sz300750 与 sh688981 都解析出报价');
+  for (const q of [sz, star]) {
+    assert.ok(q.pb > 0, `${q.symbol} pb > 0（got ${q.pb}）`);
+    assert.ok(q.limitUp >= q.price, `${q.symbol} 涨停价 ≥ 现价`);
+    assert.ok(q.limitDown <= q.price, `${q.symbol} 跌停价 ≤ 现价`);
+    assert.ok(q.limitUp > q.limitDown, `${q.symbol} 涨停 > 跌停`);
+    assert.ok(q.turnover > 0, `${q.symbol} 换手率 > 0`);
+    assert.ok(q.volRatio > 0, `${q.symbol} 量比 > 0`);
+    assert.ok(q.pe > 0, `${q.symbol} PE 正常`);
+  }
+});

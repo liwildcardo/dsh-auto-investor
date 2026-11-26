@@ -151,3 +151,28 @@ test('valuation PE/PB 复合：两源平均、单源回退、双缺弃权', () =
   // null 视为缺数据（历史 Number(null)=0 → +2 是缺陷，不再复现）
   assert.equal(ev({ pePercentile: null, pbPercentile: null }).noData, true, '双 null → noData');
 });
+
+test('valuation note 恢复档位词（分数不变）', () => {
+  const ev = (ctx) => evaluateSignals([{ id: 'valuation', params: { low: 0.3, high: 0.8 } }], ctx)[0];
+  assert.equal(ev({ pePercentile: 0.2 }).note, 'PE 分位 20% 偏低');
+  assert.equal(ev({ pePercentile: 0.4 }).note, 'PE 分位 40% 中低');
+  assert.equal(ev({ pePercentile: 0.9 }).note, 'PE 分位 90% 偏高');
+  assert.equal(ev({ pePercentile: 0.7 }).note, 'PE 分位 70% 中高');
+  assert.equal(ev({ pePercentile: 0.55 }).note, 'PE 分位 55%', '中性档无后缀');
+  assert.equal(
+    ev({ pePercentile: 0.2, pbPercentile: 0.1 }).note,
+    'PE 分位 20% 偏低 / PB 分位 10% 偏低',
+    '双源各自带档位词',
+  );
+  assert.equal(ev({ pePercentile: 0.2 }).score, 2, '分数不变');
+});
+
+test('新信号 note 带方向说明（利好/利空黄金、金银比强弱）', () => {
+  const be = (bp) => evaluateSignals([{ id: 'breakevenInflation' }], { breakeven: { delta5d: bp, stale: false } })[0];
+  assert.match(be(0.12).note, /利好黄金/, '预期上行 → 利好');
+  assert.match(be(-0.12).note, /利空黄金/, '预期下行 → 利空');
+  assert.doesNotMatch(be(0.01).note, /利好黄金|利空黄金/, '中性不加方向词');
+  const gs = (p) => evaluateSignals([{ id: 'goldSilverRatio' }], { goldSilverRatio: { delta5d: p, stale: false } })[0];
+  assert.match(gs(5.2).note, /走强/, '比值上行 → 黄金相对走强');
+  assert.match(gs(-5.2).note, /走弱/, '比值下行 → 黄金相对走弱');
+});

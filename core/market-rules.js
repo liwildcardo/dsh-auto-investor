@@ -129,7 +129,16 @@ export function priceLimitBand(rules, prevClose, symbol = null) {
 export function withinPriceBand(rules, prevClose, price, symbol = null, quoteBand = null) {
   const up = Number(quoteBand?.up);
   const down = Number(quoteBand?.down);
-  if (Number.isFinite(up) && up > 0 && Number.isFinite(down) && down > 0) {
+  const positive = Number.isFinite(up) && up > 0 && Number.isFinite(down) && down > 0;
+  // 合理界：A 股板限 ≤20%，真实涨跌停必须落在 prevClose ±30% 内才算可信
+  // （防字段漂移出"看似合理"的假涨停价覆盖配置带）；prevClose 无效时无基线
+  // 可校验，仍信真实带（有真实带总比没有强）。
+  const sane = positive && (
+    !Number.isFinite(prevClose) || prevClose <= 0
+    || (up <= prevClose * 1.3 && up >= prevClose * 0.7
+      && down <= prevClose * 1.3 && down >= prevClose * 0.7)
+  );
+  if (sane) {
     return price <= up + 1e-9 && price >= down - 1e-9;
   }
   const band = priceLimitBand(rules, prevClose, symbol);

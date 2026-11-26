@@ -179,7 +179,7 @@ export async function fetchDailyHistory(fetchFn, symbol, count = 120, timeoutMs 
  * 3-column legacy payloads (date,open,close) yield null high/low/volume.
  * ts is built at market-local midnight (Asia/Shanghai for the gold secid).
  */
-export async function fetchEmDaily(fetchFn, secid, days = 400, timeoutMs = 15_000) {
+export async function fetchEmDaily(fetchFn, secid, days = 400, timeZone = 'Asia/Shanghai', timeoutMs = 15_000) {
   const beg = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10).replaceAll('-', '');
   const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56&klt=101&fqt=0&beg=${beg}&end=20991231`;
   const res = await fetchFn(url, {
@@ -194,7 +194,9 @@ export async function fetchEmDaily(fetchFn, secid, days = 400, timeoutMs = 15_00
     const p = String(line).split(',');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(p[0] ?? '')) continue;
     const price = Number(p[2]);
-    const ts = Date.parse(`${p[0]}T00:00:00+08:00`);
+    // 日界按产品时区构建（默认上海；第二个非上海种子落地时零改动）
+    const [y, m, d] = p[0].split('-').map(Number);
+    const ts = zonedEpoch(y, m, d, 0, 0, timeZone);
     if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(ts) || ts < cutoff) continue;
     const num = (i) => {
       const v = Number(p[i]);
