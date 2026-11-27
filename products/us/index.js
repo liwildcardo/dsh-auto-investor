@@ -79,6 +79,7 @@ export default {
       { path: 'risk.takeProfitPct', min: 3, max: 40, step: 1 },
       { path: 'signals.valuation.weight', min: 0, max: 2, step: 0.1 },
       { path: 'signals.yieldCurve.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'candidates.threshold', min: 0.5, max: 1.5, step: 0.05 },
     ],
   },
 

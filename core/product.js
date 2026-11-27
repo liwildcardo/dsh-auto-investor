@@ -11,7 +11,9 @@ const DEFAULTS = {
   news: { feeds: [], queries: [], relevance: { core: [], context: [] }, perSymbol: true },
   strategy: {
     signals: [],
-    candidates: null,
+    // Candidate gate: composite score (≤ +2) a symbol must reach to be tradable.
+    // Kept in the strategy version so reviews can audit/evolve it.
+    candidates: { threshold: 0.8 },
     prompt: {},
     decision: { actions: ['buy', 'sell', 'hold'], shape: 'symbol+shares' },
     evolvable: [],
@@ -45,6 +47,11 @@ const DEFAULTS = {
     circuitBreakerPct: -15, // total drawdown from the initial capital stops new trades
     stopLossPct: -3,
     takeProfitPct: 6,
+    // Optional per-product safety floors (null = not configured):
+    // a hard stop that no strategy version may loosen past, and the fraction
+    // of a position sold on take-profit (null = liquidate).
+    hardStopLossPct: null,
+    takeProfitFraction: null,
     minVolatility: undefined, // per-bar σ floor for entries (products set their own)
     trailingStopPct: null, // lock profits: exit when price falls this far from the peak (in profit only)
     maxHoldHours: null, // time stop: exit a losing position held longer than this

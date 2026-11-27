@@ -73,6 +73,7 @@ export default {
       { path: 'risk.stopLossPct', min: -12, max: -1, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 2, max: 30, step: 0.5 },
       { path: 'signals.valuation.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'candidates.threshold', min: 0.5, max: 1.5, step: 0.05 },
     ],
   },
 

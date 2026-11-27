@@ -69,6 +69,7 @@ export default {
       { path: 'signals.trend.params.slow', min: 10, max: 120, step: 5 },
       { path: 'signals.trend.params.fast', min: 3, max: 20, step: 1 },
       { path: 'signals.momentum.params.period', min: 5, max: 30, step: 1 },
+      { path: 'signals.rsi.params.period', min: 5, max: 30, step: 1 },
       { path: 'signals.trend.weight', min: 0.2, max: 3, step: 0.1 },
       { path: 'risk.stopLossPct', min: -12, max: -1, step: 0.5 },
       { path: 'risk.takeProfitPct', min: 1, max: 20, step: 0.5 },
@@ -77,6 +78,7 @@ export default {
       { path: 'signals.breakevenInflation.weight', min: 0, max: 2, step: 0.1 },
       { path: 'signals.yieldCurve.weight', min: 0, max: 2, step: 0.1 },
       { path: 'signals.goldSilverRatio.weight', min: 0, max: 2, step: 0.1 },
+      { path: 'candidates.threshold', min: 0.5, max: 1.5, step: 0.05 },
     ],
   },
 
@@ -98,5 +100,7 @@ export default {
     dailyLossPct: -2,
     stopLossPct: -3,
     takeProfitPct: 6,
+    hardStopLossPct: -5, // no version may loosen the stop past this
+    takeProfitFraction: 0.5, // take-profit sells half, once per position
   },
 };
